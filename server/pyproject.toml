@@ -1,0 +1,22 @@
+[project]
+name = "ptouch-print"
+version = "0.1.0"
+description = "Web + MCP + REST + CLI label printing for the Brother PT-P300BT"
+readme = "../README.md"
+requires-python = ">=3.10"
+dependencies = ["pyserial>=3.5", "Pillow>=10", "qrcode>=7"]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
+api = ["fastapi>=0.110", "uvicorn>=0.29"]
+
+[project.scripts]
+ptprint = "ptprint:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["ptprint", "mcp_server", "api"]
+packages = ["ptouch"]

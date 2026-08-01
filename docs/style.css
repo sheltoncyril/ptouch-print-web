@@ -1,0 +1,49 @@
+:root {
+  --bg: #f6f7f9; --fg: #1a1c1f; --card: #ffffff; --border: #d9dde2;
+  --accent: #2f6feb; --accent-fg: #fff; --muted: #6b7280;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a; --fg: #e6e8eb; --card: #1e2126; --border: #333941;
+    --accent: #4c86ff; --accent-fg: #0b0d10; --muted: #9aa3ad;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { margin: 0 0 2px; font-size: 1.6rem; }
+h2 { margin: 0 0 10px; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.sub { margin: 0 0 20px; color: var(--muted); }
+.card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px; margin-bottom: 16px;
+}
+fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 14px; padding: 10px 12px; }
+legend { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; padding: 0 4px; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.row:last-child { margin-bottom: 0; }
+label { display: inline-flex; gap: 6px; align-items: center; }
+input[type=text], select {
+  font: inherit; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+}
+input[type=text] { width: 100%; }
+button {
+  font: inherit; font-weight: 600; padding: 9px 16px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.preview-wrap { overflow-x: auto; background: repeating-conic-gradient(#0000 0 25%, #8884 0 50%) 0 0/16px 16px; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+#preview { display: block; image-rendering: pixelated; background: #fff; }
+.hint { color: var(--muted); font-size: .85rem; margin: 8px 0 0; }
+#log {
+  margin: 0; padding: 10px; min-height: 60px; max-height: 220px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap;
+}
+footer { color: var(--muted); font-size: .8rem; text-align: center; margin-top: 8px; }

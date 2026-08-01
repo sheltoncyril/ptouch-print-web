@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ptouch-print — Brother PT-P300BT</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- QR generator (only needed for QR labels). Offline? QR button reports it; text still works. -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+</head>
+<body>
+  <main>
+    <h1>ptouch-print</h1>
+    <p class="sub">Print to a Brother PT-P300BT straight from your browser over Bluetooth (WebSerial).</p>
+
+    <section class="card">
+      <div class="row">
+        <button id="connectBtn">Connect printer</button>
+        <button id="detectBtn" disabled>Detect tape</button>
+      </div>
+
+      <fieldset>
+        <legend>Label</legend>
+        <div class="row">
+          <label><input type="radio" name="mode" value="text" checked> Text</label>
+          <label><input type="radio" name="mode" value="qr"> QR</label>
+        </div>
+        <input id="data" type="text" placeholder="BOX-A" value="BOX-A" autocomplete="off">
+      </fieldset>
+
+      <fieldset>
+        <legend>Tape</legend>
+        <div class="row">
+          <label>Width
+            <select id="tape">
+              <option value="auto">Auto-detect</option>
+              <option value="6">6 mm</option>
+              <option value="9">9 mm</option>
+              <option value="12" selected>12 mm</option>
+              <option value="18">18 mm</option>
+              <option value="24">24 mm</option>
+            </select>
+          </label>
+          <label>Media
+            <select id="media">
+              <option value="auto" selected>Auto</option>
+              <option value="laminated">Laminated (mirror)</option>
+              <option value="heatshrink">Heat-shrink (no mirror)</option>
+            </select>
+          </label>
+        </div>
+      </fieldset>
+
+      <div class="row">
+        <button id="printBtn" class="primary" disabled>Print</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Preview</h2>
+      <div class="preview-wrap"><canvas id="preview"></canvas></div>
+      <p class="hint">Preview shows the raster as sent (tape width runs left-right).</p>
+    </section>
+
+    <section class="card">
+      <h2>Log</h2>
+      <pre id="log"></pre>
+    </section>
+
+    <footer>Chromium (Chrome/Edge) only · needs HTTPS or localhost · printer must be paired &amp; awake</footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
