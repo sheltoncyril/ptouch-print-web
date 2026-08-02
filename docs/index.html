@@ -25,7 +25,7 @@
           <label><input type="radio" name="mode" value="text" checked> Text</label>
           <label><input type="radio" name="mode" value="qr"> QR</label>
         </div>
-        <input id="data" type="text" placeholder="BOX-A" value="BOX-A" autocomplete="off">
+        <input id="data" type="text" placeholder="10kΩ" value="10kΩ" autocomplete="off">
       </fieldset>
 
       <fieldset>
@@ -52,6 +52,9 @@
       </fieldset>
 
       <div class="row">
+        <label class="check"><input type="checkbox" id="cutlines"> Cut lines</label>
+      </div>
+      <div class="row">
         <button id="printBtn" class="primary" disabled>Print</button>
       </div>
     </section>
@@ -59,7 +62,7 @@
     <section class="card">
       <h2>Preview</h2>
       <div class="preview-wrap"><canvas id="preview"></canvas></div>
-      <p class="hint">Preview shows the raster as sent (tape width runs left-right).</p>
+      <p class="hint">Preview shows the label as it reads; the mirror/rotation for printing is applied automatically.</p>
     </section>
 
     <section class="card">

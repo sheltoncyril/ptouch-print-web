@@ -25,18 +25,20 @@ def printer_status(port: str = DEFAULT_PORT) -> dict:
 
 @mcp.tool()
 def print_text(text: str, tape: int | None = None, flip: str = "auto",
-               port: str = DEFAULT_PORT) -> dict:
+               save_tape: bool = False, cut: bool = False, port: str = DEFAULT_PORT) -> dict:
     """Print a text label. Omit `tape` to auto-detect the loaded width. `flip`: auto|on|off
-    (use 'off' for heat-shrink tube). Returns what was printed."""
-    return printer.print_label(text=text, tape=tape, flip=flip, port=port)
+    (use 'off' for heat-shrink tube). `save_tape` uses chain printing (batch only). `cut` adds
+    cut-line marks at both ends. Returns what was printed."""
+    return printer.print_label(text=text, tape=tape, flip=flip, save_tape=save_tape, cut=cut, port=port)
 
 
 @mcp.tool()
 def print_qr(data: str, tape: int | None = None, flip: str = "auto",
-             port: str = DEFAULT_PORT) -> dict:
+             save_tape: bool = False, cut: bool = False, port: str = DEFAULT_PORT) -> dict:
     """Print a QR-code label encoding `data` (e.g. a Part-DB location URL). Use tape >= 9mm;
-    QR on 6mm is too dense to scan reliably."""
-    return printer.print_label(qr=data, tape=tape, flip=flip, port=port)
+    QR on 6mm is too dense to scan reliably. `save_tape` = chain printing (batch); `cut` adds
+    cut-line marks at both ends."""
+    return printer.print_label(qr=data, tape=tape, flip=flip, save_tape=save_tape, cut=cut, port=port)
 
 
 if __name__ == "__main__":

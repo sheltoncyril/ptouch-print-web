@@ -16,6 +16,8 @@ class Label(BaseModel):
     qr: str | None = None
     tape: int | None = None          # omit to auto-detect
     flip: str = "auto"               # auto | on | off
+    save_tape: bool = False          # chain printing (batch only): label stays inside until next print
+    cut: bool = False                # print cut-line marks at both ends
     port: str = printer.DEFAULT_PORT
 
 
@@ -33,6 +35,6 @@ def print_label(label: Label):
         raise HTTPException(400, "text or qr is required")
     try:
         return printer.print_label(text=label.text, qr=label.qr, tape=label.tape,
-                                   flip=label.flip, port=label.port)
+                                   flip=label.flip, save_tape=label.save_tape, cut=label.cut, port=label.port)
     except Exception as e:
         raise HTTPException(500, str(e))

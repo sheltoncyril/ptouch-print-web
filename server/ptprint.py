@@ -22,6 +22,9 @@ def main():
                     help="loaded tape width mm (omit = auto-detect)")
     ap.add_argument("--flip", choices=["auto", "on", "off"], default="auto",
                     help="de-mirror: auto (by media), on (laminated), off (heat-shrink)")
+    ap.add_argument("--chain", dest="save_tape", action="store_true",
+                    help="chain printing (batch tape-saving); a single label stays inside until the next print")
+    ap.add_argument("--cut", action="store_true", help="print cut-line marks at both ends")
     ap.add_argument("--font")
     ap.add_argument("--height", type=int, default=0)
     ap.add_argument("--dry", metavar="PNG", help="render a preview PNG, do not print")
@@ -40,7 +43,7 @@ def main():
         from PIL import Image
         tape = a.tape or 12
         comp = raster.compose(text=a.text, qr=a.qr, tape=tape, flip=a.flip,
-                              font=a.font, height=a.height)
+                              font=a.font, height=a.height, save_tape=a.save_tape, cut=a.cut)
         c = comp["canvas"]
         c.resize((raster.RASTER_WIDTH * 4, c.size[1] * 4), Image.NEAREST).save(a.dry)
         print(f"DRY tape={tape}mm flip={'on' if comp['flip'] else 'off'} "
@@ -48,7 +51,7 @@ def main():
         return
 
     print(printer.print_label(text=a.text, qr=a.qr, tape=a.tape, flip=a.flip,
-                              font=a.font, height=a.height, port=a.port))
+                              font=a.font, height=a.height, port=a.port, save_tape=a.save_tape, cut=a.cut))
 
 
 if __name__ == "__main__":
