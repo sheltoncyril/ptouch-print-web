@@ -23,8 +23,24 @@ def open_port(port=DEFAULT_PORT, timeout=3, write_timeout=10, attempts=6, delay=
     raise last
 
 
+# 32-byte status block error bits. err1 = offset 8, err2 = offset 9.
+# NB: err1 0x08 = weak batteries. A dense/long print sags weak AAAs until the head trips this
+# and reds "near the end" — it looks exactly like a raster/buffer stall but is pure power.
+ERR1 = {0x01: "no media", 0x02: "end of media", 0x04: "cutter jam",
+        0x08: "WEAK BATTERIES (replace all 6 AAA / use a 5V wall charger)",
+        0x10: "printer in use", 0x40: "high-voltage adapter"}
+ERR2 = {0x01: "replace media", 0x02: "expansion buffer full", 0x04: "comm error",
+        0x08: "comm buffer full", 0x10: "cover open", 0x20: "overheated",
+        0x40: "black mark not found", 0x80: "system error"}
+
+
+def decode_error(err1, err2):
+    msgs = [v for b, v in ERR1.items() if err1 & b] + [v for b, v in ERR2.items() if err2 & b]
+    return ", ".join(msgs)
+
+
 def read_status(ser):
-    """ESC i S -> 32-byte status block. Returns {'width','type','heat_shrink','raw'} or None."""
+    """ESC i S -> 32-byte status block. Returns dict (incl. decoded 'error') or None."""
     try:
         ser.reset_input_buffer()
         ser.write(bytes([0x1B, 0x40, 0x1B, 0x69, 0x53]))     # ESC @ then ESC i S
@@ -32,17 +48,34 @@ def read_status(ser):
         time.sleep(0.4)
         data = ser.read(32)
         if len(data) >= 12 and data[0] == 0x80:
+            e1, e2 = (data[8], data[9]) if len(data) >= 10 else (0, 0)
             return {
                 "width": data[10],
                 "type": data[11],
                 "heat_shrink": data[11] in raster.HEAT_SHRINK_TYPES,
-                "err": (data[8] | data[9]) if len(data) >= 10 else 0,
+                "err": e1 | e2,
+                "err1": e1, "err2": e2,
+                "error": decode_error(e1, e2),
+                "weak_battery": bool(e1 & 0x08),
                 "phase": data[19] if len(data) >= 20 else 0,
                 "raw": bytes(data).hex(),
             }
     except Exception:
         pass
     return None
+
+
+def reset(ser):
+    """Clear a stalled/red printer WITHOUT a physical power-cycle (Brother null-flush idiom):
+    invalidate + init, drain status, 64 NUL bytes to flush the command parser, init again."""
+    try:
+        ser.write(bytes([0x1B, 0x69, 0x61, 0x01, 0x1B, 0x40])); ser.flush()   # raster mode + ESC @
+        ser.reset_input_buffer()
+        ser.write(bytes([0x1B, 0x69, 0x53])); ser.flush(); time.sleep(0.3); ser.read(32)
+        ser.write(bytes(64)); ser.flush()                                     # 64 NUL -> flush parser
+        ser.write(bytes([0x1B, 0x40])); ser.flush(); time.sleep(0.2)          # ESC @ init
+    except Exception:
+        pass
 
 
 def wait_ready(ser, timeout=15.0):
@@ -66,21 +99,43 @@ def wait_ready(ser, timeout=15.0):
     return False
 
 
-def send_job(ser, job, chunk=128):
-    # Pace WELL below the ~9mm head's print rate (~2-3 KB/s) so the printer's small input
-    # buffer never overflows. Overflowing drops the tail -> printer stalls waiting for the
-    # raster lines it was promised (ESC i z count) -> red. ~850 B/s here.
-    for i in range(0, len(job), chunk):
-        ser.write(job[i:i + chunk])
-        ser.flush()
-        time.sleep(0.15)
+def send_job(ser, job, pace=False, chunk=128, gap=0.15):
+    # Stream the whole job in ONE write; Bluetooth RFCOMM flow-controls it to the printer's pace.
+    # (The old 128 B / 150 ms throttle was cargo-culted against a "buffer overflow" that turned
+    # out to be weak batteries — see docs/HANDOFF.md. Continuous is simpler and fine.)
+    if pace:                                    # legacy throttled path, kept for A/B testing
+        for i in range(0, len(job), chunk):
+            ser.write(job[i:i + chunk]); ser.flush(); time.sleep(gap)
+    else:
+        ser.write(job); ser.flush()             # continuous; RFCOMM paces it
     time.sleep(3.5)          # let the printer finish feeding before the port closes / next job opens
+
+
+def feed(ser):
+    """Advance + eject tape without printing — pushes out any label held inside by a no-feed
+    (0C) job so it can be torn off. A tiny blank raster ending in the 1A print+eject."""
+    reset(ser)                                          # clear any red, init
+    st = read_status(ser) or {}
+    tape = st.get("width") or 12
+    media_type = st.get("type") or 0x01
+    job = raster.build_job(raster._blank_rows(8), tape, media_type, compress=False)
+    send_job(ser, job)
+    return {"fed": True, "tape": tape}
 
 
 def status(port=DEFAULT_PORT):
     ser = open_port(port)
     try:
         return read_status(ser)
+    finally:
+        ser.close()
+
+
+def feed_out(port=DEFAULT_PORT):
+    """Open the port, feed/eject tape, close. Used by the CLI/REST 'feed' button."""
+    ser = open_port(port)
+    try:
+        return feed(ser)
     finally:
         ser.close()
 
@@ -92,9 +147,12 @@ def print_label(text=None, qr=None, tape=None, flip="auto", font=None, height=0,
         raise ValueError("text or qr is required")
     ser = open_port(port)
     try:
-        detected = None
-        if tape is None or flip == "auto" or media_type is None:
-            detected = read_status(ser)
+        reset(ser)                                    # clear any prior stall/red without a power-cycle
+        detected = read_status(ser)
+        if detected and detected.get("weak_battery"):
+            # fail before wasting a label — a dense/long print will brown out and red mid-feed
+            raise RuntimeError("weak batteries: replace all 6 AAA (fresh alkaline) or run off a 5V "
+                               "wall charger, then retry — this is the usual cause of end-of-label reds")
         if media_type is None:
             media_type = detected["type"] if (detected and detected["type"]) else 0x01
         if tape is None:
@@ -104,7 +162,9 @@ def print_label(text=None, qr=None, tape=None, flip="auto", font=None, height=0,
                 raise RuntimeError("could not detect tape width; pass tape=<mm> "
                                    "(and flip='off' for heat-shrink)")
         if not wait_ready(ser):
-            raise RuntimeError("printer busy or in error (red light) — power-cycle if red, else wait and retry")
+            st = read_status(ser)
+            why = (st and st.get("error")) or "busy/red — power-cycle if red, else wait and retry"
+            raise RuntimeError(f"printer not ready: {why}")
         comp = raster.compose(text=text, qr=qr, tape=tape, media_type=media_type,
                               flip=flip, font=font, height=height, save_tape=save_tape, cut=cut)
         send_job(ser, comp["job"])

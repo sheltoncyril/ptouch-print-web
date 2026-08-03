@@ -5,14 +5,16 @@
 
 const RASTER_WIDTH = 128;
 const BYTES_PER_LINE = 16;
-const HEAT_SHRINK_TYPES = new Set([0x11, 0x17]);
+const HEAT_SHRINK_TYPES = new Set([0x11, 0x17]);      // tube -> read from outside, do NOT mirror
 const KNOWN_PRINTABLE = { 6: 32, 9: 50, 12: 64, 18: 64, 24: 64 };   // P300BT caps print at ~9mm (64 dots)
 const DPMM = 180 / 25.4;                               // printer dots per millimetre
 const CUT_GAP_DOTS = 12;                               // blank margin either side of a cut line (~1.7mm)
-const CUT_LINE_DOTS = 3;                               // cut-line thickness along the tape (~0.4mm)
+const CUT_LINE_DOTS = 1;                               // cut-line thickness along the tape (~0.14mm) — thin
+const CUT_DASH = 2;                                    // dotted line: dot pitch across the width
 
 let port = null;
 let detectedTape = null;
+let detectedType = null;                              // last-detected media type byte (for auto mirror)
 
 const $ = (id) => document.getElementById(id);
 function log(msg) { const el = $("log"); el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; }
@@ -23,15 +25,16 @@ function printableDots(mm) {
 function resolveFlip(flip, mediaType) {
   if (flip === "on") return true;
   if (flip === "off") return false;
-  return !HEAT_SHRINK_TYPES.has(mediaType);            // auto: laminated flips, heat-shrink doesn't
+  return !HEAT_SHRINK_TYPES.has(mediaType);            // auto: mirror unless heat-shrink tube (verified)
 }
 function printableSpan(printable) { return Math.floor((RASTER_WIDTH - printable) / 2); }   // x0
 
 /* ---- render content to a tight black-on-white canvas ---- */
-function renderText(text) {
+function renderText(text, family = "Arial, sans-serif", weight = "bold") {
   const F = 128;
+  const fontStr = `${weight} ${F}px ${family}`;
   const meas = document.createElement("canvas").getContext("2d");
-  meas.font = `bold ${F}px Arial, sans-serif`;
+  meas.font = fontStr;
   const m = meas.measureText(text);
   const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
   const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
@@ -40,7 +43,7 @@ function renderText(text) {
   const c = document.createElement("canvas"); c.width = w; c.height = h;
   const ctx = c.getContext("2d");
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
-  ctx.fillStyle = "#000"; ctx.font = `bold ${F}px Arial, sans-serif`; ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#000"; ctx.font = fontStr; ctx.textBaseline = "alphabetic";
   ctx.fillText(text, left, asc);
   return c;
 }
@@ -83,23 +86,23 @@ function buildRows(content, printable, flip) {
 
 /* ---- optional cut lines: solid line across the printable width at each end, + margins ---- */
 function blankRows(n) { const a = []; for (let i = 0; i < n; i++) a.push(new Uint8Array(BYTES_PER_LINE)); return a; }
-function solidRows(n, printable) {
+function cutRows(n, printable) {                       // thin DOTTED cut-guide across the width
   const x0 = printableSpan(printable), a = [];
   for (let i = 0; i < n; i++) {
     const l = new Uint8Array(BYTES_PER_LINE);
-    for (let x = x0; x < x0 + printable; x++) l[x >> 3] |= (0x80 >> (x & 7));
+    for (let j = 0; j < printable; j++) if (j % CUT_DASH === 0) { const x = x0 + j; l[x >> 3] |= (0x80 >> (x & 7)); }
     a.push(l);
   }
   return a;
 }
-function assemble(contentRows, printable, cut) {
+function assemble(contentRows, printable, cut, flip) {
   if (!cut) return { rows: contentRows, contentLen: contentRows.length, total: contentRows.length, cut: false };
+  // ONE cut line at the reading-LEFT — in a strip it doubles as the previous label's boundary,
+  // so labels butt tightly (|1|1). The mirror (flip) reverses the raster length axis, so prepend
+  // when flip is OFF and append when ON to keep the line on the LEFT of the reading view.
   const G = CUT_GAP_DOTS, L = CUT_LINE_DOTS;
-  const rows = [].concat(
-    blankRows(G), solidRows(L, printable), blankRows(G),
-    contentRows,
-    blankRows(G), solidRows(L, printable), blankRows(G),
-  );
+  const mark = [].concat(blankRows(G), cutRows(L, printable), blankRows(G));
+  const rows = flip ? [].concat(contentRows, mark) : [].concat(mark, contentRows);
   return { rows, contentLen: contentRows.length, total: rows.length, cut: true, G, L };
 }
 
@@ -112,10 +115,10 @@ function buildJob(rows, tapeMm, mediaType, saveTape) {
        n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF, (n >> 24) & 0xFF, 0x00, 0x00);
   push(0x1B, 0x69, 0x4B, 0x08);                        // no chain — P300BT requires a full eject
   push(0x1B, 0x69, 0x4D, 0x00);
-  push(0x1B, 0x69, 0x64, 0x1C, 0x00);
+  push(0x1B, 0x69, 0x64, 0x00, 0x00);                  // feed margin = 0 (tight butting; was 28)
   push(0x4D, 0x00);                                    // compression off
   for (const r of rows) { push(0x47, BYTES_PER_LINE, 0x00); for (const b of r) push(b); }
-  push(0x1A);                                          // SUB = print + eject (0C/no-feed reds the P300BT)
+  push(saveTape ? 0x0C : 0x1A);                        // 0C = print + HOLD (no auto-feed); 1A = print + eject
   return new Uint8Array(out);
 }
 
@@ -145,11 +148,12 @@ function drawPreview(content, tapeMm, printable, asm) {
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(content, contentX, cbTop, Math.max(1, Math.round(d2p(Ws))), printablePx);
 
-  if (asm.cut) {                                        // cut-line marks at both ends
+  if (asm.cut) {                                        // single DOTTED cut mark at the LEFT
     ctx.fillStyle = "#000";
     const lw = Math.max(1, Math.round(d2p(asm.L)));
-    ctx.fillRect(bx + Math.round(d2p(asm.G)), cbTop, lw, printablePx);
-    ctx.fillRect(bx + Math.round(d2p(asm.G + asm.L + asm.G + Ws + asm.G)), cbTop, lw, printablePx);
+    const mx = bx + Math.round(d2p(asm.G));
+    const step = Math.max(2, Math.round(d2p(CUT_DASH)));
+    for (let y = 0; y < printablePx; y += step) ctx.fillRect(mx, cbTop + y, lw, Math.max(1, lw));
   }
 
   // vertical ruler = tape width in mm
@@ -171,21 +175,26 @@ function currentParams() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
   const tapeSel = $("tape").value;
   const media = $("media").value;
-  const flip = media === "laminated" ? "on" : media === "heatshrink" ? "off" : "auto";
-  const mediaType = media === "heatshrink" ? 0x11 : 0x01;
+  let flip, mediaType;
+  if (media === "laminated") { flip = "on"; mediaType = 0x01; }
+  else if (media === "heatshrink") { flip = "off"; mediaType = 0x11; }
+  else { flip = "auto"; mediaType = detectedType || 0x01; }   // auto: mirror off the DETECTED type
   const tape = tapeSel === "auto" ? (detectedTape || 12) : parseInt(tapeSel, 10);
-  return { mode, tape, flip, mediaType };
+  const saveTape = $("nofeed").checked;                // 0C terminator: print + hold (no auto-feed)
+  const font = $("font").value;
+  const weight = $("bold").checked ? "bold" : "normal";
+  return { mode, tape, flip, mediaType, saveTape, font, weight };
 }
 
 function compose() {
-  const { mode, tape, flip, mediaType } = currentParams();
+  const { mode, tape, flip, mediaType, saveTape, font, weight } = currentParams();
   const printable = printableDots(tape);
   const doFlip = resolveFlip(flip, mediaType);
   const text = $("data").value || " ";
-  const content = mode === "qr" ? renderQR(text) : renderText(text);
-  const asm = assemble(buildRows(content, printable, doFlip), printable, $("cutlines").checked);
+  const content = mode === "qr" ? renderQR(text) : renderText(text, font, weight);
+  const asm = assemble(buildRows(content, printable, doFlip), printable, $("cutlines").checked, doFlip);
   drawPreview(content, tape, printable, asm);
-  return { rows: asm.rows, tape, mediaType, doFlip };
+  return { rows: asm.rows, tape, mediaType, doFlip, saveTape };
 }
 
 /* ---- WebSerial ---- */
@@ -195,10 +204,10 @@ async function connect() {
     port = await navigator.serial.requestPort();
     await port.open({ baudRate: 9600 });
     log("connected.");
-    $("printBtn").disabled = false; $("detectBtn").disabled = false;
+    $("printBtn").disabled = false; $("detectBtn").disabled = false; $("feedBtn").disabled = false;
     port.addEventListener("disconnect", () => {
       port = null;
-      $("printBtn").disabled = true; $("detectBtn").disabled = true;
+      $("printBtn").disabled = true; $("detectBtn").disabled = true; $("feedBtn").disabled = true;
       log("printer disconnected — reconnect to print again.");
     });
     await new Promise((r) => setTimeout(r, 400));      // let the SPP link settle
@@ -236,10 +245,11 @@ async function detectTape() {
     const data = new Uint8Array(total); let o = 0; for (const c of chunks) { data.set(c, o); o += c.length; }
     if (data.length >= 12 && data[0] === 0x80) {
       const width = data[10], type = data[11], hs = HEAT_SHRINK_TYPES.has(type);
-      detectedTape = width;
+      detectedTape = width; detectedType = type;
       if (KNOWN_PRINTABLE[width]) $("tape").value = String(width);
       $("media").value = hs ? "heatshrink" : "auto";
-      log(`detected tape=${width}mm type=0x${type.toString(16)}${hs ? " (heat-shrink)" : ""}`);
+      const mirror = !HEAT_SHRINK_TYPES.has(type);
+      log(`detected tape=${width}mm type=0x${type.toString(16)} — ${mirror ? "mirrored" : "heat-shrink (no mirror)"}`);
     } else {
       log("no status response (printer off/asleep, or model lacks ESC i S). Pick tape manually.");
     }
@@ -250,12 +260,25 @@ async function detectTape() {
 async function printLabel() {
   if (!port) { log("connect first."); return; }
   try {
-    const { rows, tape, mediaType, doFlip } = compose();
-    const job = buildJob(rows, tape, mediaType);
-    log(`printing tape=${tape}mm flip=${doFlip ? "on" : "off"} ${rows.length} lines, ${job.length} bytes...`);
+    const { rows, tape, mediaType, doFlip, saveTape } = compose();
+    const job = buildJob(rows, tape, mediaType, saveTape);
+    log(`printing tape=${tape}mm flip=${doFlip ? "on" : "off"} ${rows.length} lines, ${job.length} bytes${saveTape ? " (no auto-feed)" : ""}...`);
     await writeBytes(job);
-    log("done. (red blink = tape-width mismatch: fix tape, power-cycle, retry)");
+    log(saveTape ? "done — label held inside; hit Feed / eject when finished."
+                 : "done. (red = usually WEAK BATTERIES on a long/dense label — replace all 6 AAA)");
   } catch (e) { log("print failed: " + e.message); }
+}
+
+// Feed/eject: a tiny blank job ending in the 1A eject, to push out a label held inside by a
+// no-feed batch so it can be torn off. Tape width doesn't matter for blank feed; use current.
+async function feedOut() {
+  if (!port) { log("connect first."); return; }
+  try {
+    const { tape, mediaType } = currentParams();
+    log("feeding out...");
+    await writeBytes(buildJob(blankRows(8), tape, mediaType));
+    log("fed.");
+  } catch (e) { log("feed failed: " + e.message); }
 }
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -263,8 +286,11 @@ window.addEventListener("DOMContentLoaded", () => {
   $("connectBtn").addEventListener("click", connect);
   $("detectBtn").addEventListener("click", detectTape);
   $("printBtn").addEventListener("click", printLabel);
+  $("feedBtn").addEventListener("click", feedOut);
   $("data").addEventListener("input", refresh);
   $("cutlines").addEventListener("change", refresh);
+  $("font").addEventListener("change", refresh);
+  $("bold").addEventListener("change", refresh);
   // switching width/media to "auto" re-detects (if connected); otherwise just re-render
   ["tape", "media"].forEach((id) => $(id).addEventListener("change", () => {
     if ($(id).value === "auto" && port) { detectTape(); } else { refresh(); }

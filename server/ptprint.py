@@ -29,11 +29,17 @@ def main():
     ap.add_argument("--height", type=int, default=0)
     ap.add_argument("--dry", metavar="PNG", help="render a preview PNG, do not print")
     ap.add_argument("--status", action="store_true", help="query loaded tape/media and exit")
+    ap.add_argument("--feed", action="store_true",
+                    help="feed/eject tape (push out a label held by a no-feed batch) and exit")
     a = ap.parse_args()
 
     if a.status:
         st = printer.status(a.port)
         print(st if st else "no status response (printer may not support ESC i S)")
+        return
+
+    if a.feed:
+        print(printer.feed_out(a.port))
         return
 
     if not (a.text or a.qr):

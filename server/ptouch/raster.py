@@ -2,16 +2,20 @@
 Brother PT-P300BT ESC/P raster rendering (transport-agnostic, no serial here).
 
 The exact same pipeline is reimplemented in docs/app.js for the WebSerial path;
-keep the two in sync. Uncompressed raster (M 0) to avoid packbits bugs.
+keep the two in sync. Raster is sent UNCOMPRESSED (M 0x00): the P300BT Cube stalls
+on TIFF/PackBits (M 0x02) — it can't decode it (confirmed 2026-08-02: an 842 B
+compressed plain label stalls, the same 1593 B uncompressed one prints). The
+_packbits encoder is kept for full PT models that do support mode 2.
 """
 from __future__ import annotations
 
 RASTER_WIDTH = 128                       # dots across the print head
 BYTES_PER_LINE = RASTER_WIDTH // 8       # 16
-HEAT_SHRINK_TYPES = {0x11, 0x17}         # HS 2:1 / 3:1 -> printed on the outside, do NOT mirror
+HEAT_SHRINK_TYPES = {0x11, 0x17}         # HS 2:1 / 3:1 tube -> read from the outside, do NOT mirror
 _KNOWN_PRINTABLE = {6: 32, 9: 50, 12: 64, 18: 64, 24: 64}     # P300BT caps print height at ~9mm (64 dots) on any tape >= 9mm
 CUT_GAP_DOTS = 12                        # blank margin either side of a cut line (~1.7mm)
-CUT_LINE_DOTS = 3                        # cut-line thickness along the tape (~0.4mm)
+CUT_LINE_DOTS = 1                        # cut-line thickness along the tape (~0.14mm) — thin guide
+CUT_DASH = 2                             # dotted line: dot pitch across the width (2 = every other dot)
 
 
 def printable_dots(width_mm: int) -> int:
@@ -21,12 +25,14 @@ def printable_dots(width_mm: int) -> int:
 
 
 def resolve_flip(flip, media_type: int) -> bool:
-    """laminated tape must be mirrored to read right; heat-shrink must not."""
+    """This printer needs the image mirrored to read right on every tape EXCEPT heat-shrink
+    tube (read from the outside after shrinking). Verified on hardware: laminated (0x01) AND
+    non-laminated (0x03) both need the mirror; only 0x11/0x17 skip it."""
     if flip in (True, "on"):
         return True
     if flip in (False, "off"):
         return False
-    return media_type not in HEAT_SHRINK_TYPES          # auto: by media type
+    return media_type not in HEAT_SHRINK_TYPES          # auto: mirror unless heat-shrink tube
 
 
 def render_text(text, font_path=None, height=48):
@@ -82,7 +88,47 @@ def to_raster(content_img, printable, flip=True):
     return rows, canvas
 
 
-def build_job(rows, tape_mm, media_type=0x01, save_tape=False):
+def _packbits(data: bytes) -> bytes:
+    """TIFF/PackBits RLE (Brother compression mode 2). Replicate runs >=2, else literals.
+    control byte: 0..127 = copy next (c+1) literal bytes; 257-L = repeat next byte L times."""
+    out = bytearray()
+    n = len(data)
+    i = 0
+    while i < n:
+        j = i
+        while j < n - 1 and data[j] == data[j + 1]:              # extend a run of equal bytes
+            j += 1
+        if j > i:                                                # replicate run data[i..j]
+            runlen = j - i + 1
+            while runlen > 0:
+                chunk = min(runlen, 128)
+                out.append((257 - chunk) & 0xFF)                 # -(chunk-1) as signed int8
+                out.append(data[i])
+                runlen -= chunk
+            i = j + 1
+        else:                                                    # literal run up to the next >=2 run
+            k = i
+            while k < n - 1 and data[k] != data[k + 1]:
+                k += 1
+            if k == n - 1:
+                k = n
+            while k > i:
+                chunk = min(k - i, 128)
+                out.append(chunk - 1)
+                out += data[i:i + chunk]
+                i += chunk
+    return bytes(out)
+
+
+def _raster_cmd(row, compress):
+    """G raster-transfer command for one line. 47 n1 n2 <data> (n = data byte count, LE16)."""
+    if compress:
+        packed = _packbits(row)
+        return bytes([0x47, len(packed) & 0xFF, (len(packed) >> 8) & 0xFF]) + packed
+    return bytes([0x47, BYTES_PER_LINE, 0x00]) + row
+
+
+def build_job(rows, tape_mm, media_type=0x01, save_tape=False, compress=False):
     n = len(rows)
     job = bytearray()
     job += bytes([0x1B, 0x40])                                   # ESC @  init/reset
@@ -93,11 +139,13 @@ def build_job(rows, tape_mm, media_type=0x01, save_tape=False):
                   0x00, 0x00])
     job += bytes([0x1B, 0x69, 0x4B, 0x08])                       # ESC i K  no chain — P300BT requires a full eject
     job += bytes([0x1B, 0x69, 0x4D, 0x00])                       # ESC i M  no mirror/autocut
-    job += bytes([0x1B, 0x69, 0x64, 0x1C, 0x00])                 # ESC i d  feed margin = 28
-    job += bytes([0x4D, 0x00])                                   # M 0  compression OFF
+    job += bytes([0x1B, 0x69, 0x64, 0x00, 0x00])                 # ESC i d  feed margin = 0 (tight butting; was 28)
+    job += bytes([0x4D, 0x02 if compress else 0x00])            # M  TIFF/PackBits (0x02) vs none
     for r in rows:
-        job += bytes([0x47, BYTES_PER_LINE, 0x00]) + r           # G  raster transfer
-    job += bytes([0x1A])                                         # SUB  print + eject (0C/no-feed reds the P300BT)
+        job += _raster_cmd(r, compress)                          # G  raster transfer
+    # 0x1A (SUB) = print + eject; 0x0C (FF) = print + HOLD (no auto-feed) so the next label butts
+    # up against this one (save-tape). Use feed()/the Feed button to push a held strip out to tear.
+    job += bytes([0x0C if save_tape else 0x1A])
     return bytes(job)
 
 
@@ -105,20 +153,28 @@ def _blank_rows(n):
     return [bytes(BYTES_PER_LINE) for _ in range(n)]
 
 
-def _solid_rows(n, printable):
+def _cut_rows(n, printable):
+    """A thin DOTTED cut-guide line spanning the printable width (n rows thick along the tape)."""
     x0 = (RASTER_WIDTH - printable) // 2
     line = bytearray(BYTES_PER_LINE)
-    for x in range(x0, x0 + printable):
-        line[x >> 3] |= (0x80 >> (x & 7))
+    for i in range(printable):
+        if i % CUT_DASH == 0:                        # dotted: light every CUT_DASH-th dot
+            x = x0 + i
+            line[x >> 3] |= (0x80 >> (x & 7))
     return [bytes(line) for _ in range(n)]
 
 
-def assemble_cut(rows, printable):
-    """Prepend/append a cut-line + margin at each end (line spans the printable width)."""
+def assemble_cut(rows, printable, flip=False):
+    """Add ONE cut-line + margins at the reading-LEFT end. In a strip each label's left cut line
+    doubles as the previous label's right boundary, so one per label is enough and labels butt
+    tightly: ...content | gap CUT gap | content...
+
+    The laminated mirror (flip) reverses the raster's length axis: with flip OFF raster row 0 is
+    the reading-left edge (prepend the cut), with flip ON row 0 is reading-right (append it) so
+    the cut still lands on the LEFT of the finished, correctly-reading label."""
     g, ln = CUT_GAP_DOTS, CUT_LINE_DOTS
-    return (_blank_rows(g) + _solid_rows(ln, printable) + _blank_rows(g)
-            + list(rows)
-            + _blank_rows(g) + _solid_rows(ln, printable) + _blank_rows(g))
+    cut = _blank_rows(g) + _cut_rows(ln, printable) + _blank_rows(g)
+    return (list(rows) + cut) if flip else (cut + list(rows))
 
 
 def rows_to_image(rows):
@@ -140,7 +196,7 @@ def compose(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None
     content = render_qr(qr) if qr else render_text(text, font, h)
     rows, _ = to_raster(content, printable, do_flip)
     if cut:
-        rows = assemble_cut(rows, printable)
+        rows = assemble_cut(rows, printable, do_flip)
     canvas = rows_to_image(rows)
     return {
         "rows": rows, "canvas": canvas, "job": build_job(rows, tape, media_type, save_tape),
@@ -156,7 +212,7 @@ def compose_rows(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font
     content = render_qr(qr) if qr else render_text(text, font, h)
     rows, _ = to_raster(content, printable, do_flip)
     if cut:
-        rows = assemble_cut(rows, printable)
+        rows = assemble_cut(rows, printable, do_flip)
     return rows
 
 
@@ -176,8 +232,8 @@ def build_batch_job(pages, tape_mm, media_type=0x01):
         n = len(rows)
         job += bytes([0x1B, 0x69, 0x7A, 0xC4, media_type & 0xFF, tape_mm & 0xFF, 0x00,
                       n & 0xFF, (n >> 8) & 0xFF, (n >> 16) & 0xFF, (n >> 24) & 0xFF, 0x00, 0x00])
-        job += bytes([0x4D, 0x00])                               # compression off
+        job += bytes([0x4D, 0x00])                               # M  uncompressed (P300BT can't decode 0x02)
         for r in rows:
-            job += bytes([0x47, BYTES_PER_LINE, 0x00]) + r
+            job += _raster_cmd(r, False)
         job += bytes([0x1A if i == len(pages) - 1 else 0x0C])    # eject after last; FF between
     return bytes(job)

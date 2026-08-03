@@ -26,6 +26,25 @@
           <label><input type="radio" name="mode" value="qr"> QR</label>
         </div>
         <input id="data" type="text" placeholder="10kΩ" value="10kΩ" autocomplete="off">
+        <div class="row">
+          <label>Font
+            <select id="font">
+              <option value="Arial, sans-serif" selected>Arial</option>
+              <option value="'Arial Black', sans-serif">Arial Black</option>
+              <option value="'Arial Narrow', Arial, sans-serif">Arial Narrow</option>
+              <option value="Verdana, sans-serif">Verdana</option>
+              <option value="Tahoma, sans-serif">Tahoma</option>
+              <option value="'Segoe UI', sans-serif">Segoe UI</option>
+              <option value="Consolas, monospace">Consolas (mono)</option>
+              <option value="'Courier New', monospace">Courier New (mono)</option>
+              <option value="Georgia, serif">Georgia (serif)</option>
+              <option value="'Times New Roman', serif">Times (serif)</option>
+              <option value="Impact, sans-serif">Impact</option>
+              <option value="'Comic Sans MS', cursive">Comic Sans</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="bold" checked> Bold</label>
+        </div>
       </fieldset>
 
       <fieldset>
@@ -53,9 +72,11 @@
 
       <div class="row">
         <label class="check"><input type="checkbox" id="cutlines"> Cut lines</label>
+        <label class="check" title="Print but don't eject — the label stays in so the next one butts against it (tear along the cut lines). Use Feed / eject when done."><input type="checkbox" id="nofeed"> No auto-feed (save tape)</label>
       </div>
       <div class="row">
         <button id="printBtn" class="primary" disabled>Print</button>
+        <button id="feedBtn" disabled title="Advance &amp; eject tape so a held label can be torn off">Feed / eject</button>
       </div>
     </section>
 
