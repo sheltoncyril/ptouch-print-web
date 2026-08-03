@@ -15,7 +15,7 @@ const CUT_DASH = 2;                                    // dotted line: dot pitch
 let port = null;
 let detectedTape = null;
 let detectedType = null;                              // last-detected media type byte (for auto mirror)
-let detecting = false;                                // guard: only one status read at a time (stream locks)
+let busy = false;                                     // guard: one serial op at a time (detect/print/feed) — no overlap
 
 const $ = (id) => document.getElementById(id);
 function log(msg) { const el = $("log"); el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; }
@@ -260,7 +260,7 @@ async function connect() {
 async function disconnect() {
   if (!port) return;
   const p = port; port = null;                         // stop new ops, then close (releases the COM port)
-  detecting = false;
+  busy = false;
   try { await p.close(); } catch (e) { /* a read/write may be briefly locked mid-op — ignore */ }
   $("printBtn").disabled = true; $("detectBtn").disabled = true; $("feedBtn").disabled = true;
   $("connectBtn").disabled = false; $("disconnectBtn").disabled = true;
@@ -300,8 +300,8 @@ async function readStatusOnce(settleMs) {
 
 async function detectTape() {
   if (!port || !port.readable || !port.writable) { log("connect first (port not open)."); return; }
-  if (detecting) return;                                // never overlap — concurrent reads lock the streams
-  detecting = true;
+  if (busy) return;                                     // never overlap — concurrent ops lock the streams
+  busy = true;
   let data = null;                                      // last valid 0x80 status frame (width 0 = no tape)
   for (let i = 0; i < 3; i++) {                         // retry: BT read can be slow to wake; keep the freshest read
     try {
@@ -309,7 +309,7 @@ async function detectTape() {
       if (d.length >= 12 && d[0] === 0x80) { data = d; if (d[10] > 0 && i >= 1) break; }
     } catch (e) { /* transient stream lock / read error — try again */ }
   }
-  detecting = false;
+  busy = false;
   if (data && data[10] > 0) {                           // real tape
     const width = data[10], type = data[11], hs = HEAT_SHRINK_TYPES.has(type);
     detectedTape = width; detectedType = type;
@@ -326,26 +326,31 @@ async function detectTape() {
 
 async function printLabel() {
   if (!port) { log("connect first."); return; }
+  if (busy) { log("printer busy — wait for the current job to finish."); return; }
+  busy = true;
   try {
     const { rows, tape, mediaType, doFlip, saveTape } = compose();
     const job = buildJob(rows, tape, mediaType, saveTape);
     log(`printing tape=${tape}mm flip=${doFlip ? "on" : "off"} ${rows.length} lines, ${job.length} bytes${saveTape ? " (no auto-feed)" : ""}...`);
     await writeBytes(job);
-    log(saveTape ? "done — label held inside; hit Feed / eject when finished."
-                 : "done. (red = usually WEAK BATTERIES on a long/dense label — replace all 6 AAA)");
+    log(saveTape ? "done — label held inside; hit Feed / eject when finished." : "done.");
   } catch (e) { log("print failed: " + e.message); }
+  finally { await new Promise((r) => setTimeout(r, 2000)); busy = false; }   // let it finish feeding before the next job
 }
 
 // Feed/eject: a tiny blank job ending in the 1A eject, to push out a label held inside by a
 // no-feed batch so it can be torn off. Tape width doesn't matter for blank feed; use current.
 async function feedOut() {
   if (!port) { log("connect first."); return; }
+  if (busy) { log("printer busy — wait for the current job to finish."); return; }
+  busy = true;
   try {
     const { tape, mediaType } = currentParams();
     log("feeding out...");
     await writeBytes(buildJob(blankRows(8), tape, mediaType));
     log("fed.");
   } catch (e) { log("feed failed: " + e.message); }
+  finally { await new Promise((r) => setTimeout(r, 2000)); busy = false; }
 }
 
 window.addEventListener("DOMContentLoaded", () => {

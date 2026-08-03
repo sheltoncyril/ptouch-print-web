@@ -18,8 +18,8 @@ def main():
     g.add_argument("--text")
     g.add_argument("--qr")
     ap.add_argument("--port", default=printer.DEFAULT_PORT)
-    ap.add_argument("--tape", type=int, choices=[6, 9, 12, 18, 24],
-                    help="loaded tape width mm (omit = auto-detect)")
+    ap.add_argument("--tape", type=int, choices=[6, 9, 12],
+                    help="loaded tape width mm — P300BT supports 6/9/12 (omit = auto-detect)")
     ap.add_argument("--flip", choices=["auto", "on", "off"], default="auto",
                     help="de-mirror: auto (by media), on (laminated), off (heat-shrink)")
     ap.add_argument("--chain", dest="save_tape", action="store_true",
