@@ -15,6 +15,7 @@ const CUT_DASH = 2;                                    // dotted line: dot pitch
 let port = null;
 let detectedTape = null;
 let detectedType = null;                              // last-detected media type byte (for auto mirror)
+let detecting = false;                                // guard: only one status read at a time (stream locks)
 
 const $ = (id) => document.getElementById(id);
 function log(msg) { const el = $("log"); el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; }
@@ -287,13 +288,16 @@ async function readStatusOnce(settleMs) {
 
 async function detectTape() {
   if (!port || !port.readable || !port.writable) { log("connect first (port not open)."); return; }
+  if (detecting) return;                                // never overlap — concurrent reads lock the streams
+  detecting = true;
   let data = null;
-  try {
-    for (let i = 0; i < 4; i++) {                       // retry: BT read can be slow to wake; keep the freshest read
+  for (let i = 0; i < 3; i++) {                         // retry: BT read can be slow to wake; keep the freshest read
+    try {
       const d = await readStatusOnce(i ? 250 : 0);      // a swap-stale first read gets overwritten by a later one
-      if (d.length >= 12 && d[0] === 0x80) { data = d; if (i >= 1) break; }
-    }
-  } catch (e) { log("detect failed: " + e.message); }
+      if (d.length >= 12 && d[0] === 0x80 && d[10] > 0) { data = d; if (i >= 1) break; }   // width>0 = a real frame
+    } catch (e) { /* transient stream lock / read error — try again */ }
+  }
+  detecting = false;
   if (data) {
     const width = data[10], type = data[11], hs = HEAT_SHRINK_TYPES.has(type);
     detectedTape = width; detectedType = type;
