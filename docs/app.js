@@ -236,7 +236,12 @@ async function connect() {
   if (!("serial" in navigator)) { log("WebSerial unsupported — use Chrome/Edge over https or localhost."); return; }
   try {
     port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 9600 });
+    let opened = false, lastErr;
+    for (let i = 0; i < 4 && !opened; i++) {           // BT SPP port is often busy for a moment after pairing/wake
+      try { await port.open({ baudRate: 9600 }); opened = true; }
+      catch (e) { lastErr = e; await new Promise((r) => setTimeout(r, 700)); }
+    }
+    if (!opened) throw lastErr;
     log("connected.");
     $("printBtn").disabled = false; $("detectBtn").disabled = false; $("feedBtn").disabled = false;
     port.addEventListener("disconnect", () => {
@@ -244,7 +249,7 @@ async function connect() {
       $("printBtn").disabled = true; $("detectBtn").disabled = true; $("feedBtn").disabled = true;
       log("printer disconnected — reconnect to print again.");
     });
-    await new Promise((r) => setTimeout(r, 400));      // let the SPP link settle
+    await new Promise((r) => setTimeout(r, 900));      // let the SPP link settle before the first status read
     await detectTape();                                // proactive detect on connect
   } catch (e) { log("connect failed: " + e.message); }
 }
@@ -262,38 +267,42 @@ async function writeBytes(bytes) {
   } finally { writer.releaseLock(); }
 }
 
-async function readStatusOnce() {
-  await writeBytes(new Uint8Array([0x1B, 0x40, 0x1B, 0x69, 0x53]));   // ESC @  ESC i S
-  const reader = port.readable.getReader();
-  const chunks = []; let total = 0;
-  const timeout = new Promise((res) => setTimeout(() => res("t"), 1200));
+async function readStatusOnce(settleMs) {
+  if (settleMs) await new Promise((r) => setTimeout(r, settleMs));
+  const reader = port.readable.getReader();            // attach the reader BEFORE querying, or the reply is lost
   try {
+    const writer = port.writable.getWriter();          // ESC i S = live status (no ESC @ reset transient)
+    try { await writer.write(new Uint8Array([0x1B, 0x69, 0x53])); } finally { writer.releaseLock(); }
+    const chunks = []; let total = 0;
+    const timeout = new Promise((res) => setTimeout(() => res("t"), 2000));
     while (total < 32) {
       const r = await Promise.race([reader.read(), timeout]);
       if (r === "t" || r.done) break;
       chunks.push(r.value); total += r.value.length;
     }
+    const data = new Uint8Array(total); let o = 0; for (const c of chunks) { data.set(c, o); o += c.length; }
+    return data;
   } finally { try { await reader.cancel(); } catch (e) {} reader.releaseLock(); }
-  const data = new Uint8Array(total); let o = 0; for (const c of chunks) { data.set(c, o); o += c.length; }
-  return data;
 }
 
 async function detectTape() {
   if (!port || !port.readable || !port.writable) { log("connect first (port not open)."); return; }
+  let data = null;
   try {
-    await readStatusOnce();                    // discard: right after a tape swap this reports the OLD tape
-    const data = await readStatusOnce();        // second read is the current tape
-    if (data.length >= 12 && data[0] === 0x80) {
-      const width = data[10], type = data[11], hs = HEAT_SHRINK_TYPES.has(type);
-      detectedTape = width; detectedType = type;
-      if (KNOWN_PRINTABLE[width]) $("tape").value = String(width);
-      $("media").value = hs ? "heatshrink" : "auto";
-      const mirror = !HEAT_SHRINK_TYPES.has(type);
-      log(`detected tape=${width}mm type=0x${type.toString(16)} — ${mirror ? "mirrored" : "heat-shrink (no mirror)"}`);
-    } else {
-      log("no status response (printer off/asleep, or model lacks ESC i S). Pick tape manually.");
+    for (let i = 0; i < 4; i++) {                       // retry: BT read can be slow to wake; keep the freshest read
+      const d = await readStatusOnce(i ? 250 : 0);      // a swap-stale first read gets overwritten by a later one
+      if (d.length >= 12 && d[0] === 0x80) { data = d; if (i >= 1) break; }
     }
   } catch (e) { log("detect failed: " + e.message); }
+  if (data) {
+    const width = data[10], type = data[11], hs = HEAT_SHRINK_TYPES.has(type);
+    detectedTape = width; detectedType = type;
+    if (KNOWN_PRINTABLE[width]) $("tape").value = String(width);
+    $("media").value = hs ? "heatshrink" : "auto";
+    log(`detected tape=${width}mm type=0x${type.toString(16)} — ${!hs ? "mirrored" : "heat-shrink (no mirror)"}`);
+  } else {
+    log("no status response (printer asleep, or the WebSerial read didn't return). Pick tape manually.");
+  }
   try { compose(); } catch (e) { /* QR offline etc. */ }
 }
 
