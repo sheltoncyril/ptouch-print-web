@@ -302,21 +302,23 @@ async function detectTape() {
   if (!port || !port.readable || !port.writable) { log("connect first (port not open)."); return; }
   if (detecting) return;                                // never overlap — concurrent reads lock the streams
   detecting = true;
-  let data = null;
+  let data = null;                                      // last valid 0x80 status frame (width 0 = no tape)
   for (let i = 0; i < 3; i++) {                         // retry: BT read can be slow to wake; keep the freshest read
     try {
       const d = await readStatusOnce(i ? 250 : 0);      // a swap-stale first read gets overwritten by a later one
-      if (d.length >= 12 && d[0] === 0x80 && d[10] > 0) { data = d; if (i >= 1) break; }   // width>0 = a real frame
+      if (d.length >= 12 && d[0] === 0x80) { data = d; if (d[10] > 0 && i >= 1) break; }
     } catch (e) { /* transient stream lock / read error — try again */ }
   }
   detecting = false;
-  if (data) {
+  if (data && data[10] > 0) {                           // real tape
     const width = data[10], type = data[11], hs = HEAT_SHRINK_TYPES.has(type);
     detectedTape = width; detectedType = type;
     if (KNOWN_PRINTABLE[width]) $("tape").value = String(width);
     $("media").value = hs ? "heatshrink" : "auto";
     log(`detected tape=${width}mm type=0x${type.toString(16)} — ${!hs ? "mirrored" : "heat-shrink (no mirror)"}`);
-  } else {
+  } else if (data) {                                    // printer answered but reports no cartridge
+    log("no tape in the printer — insert a cartridge, or pick the width manually.");
+  } else {                                              // nothing came back at all
     log("no status response (printer asleep, or the WebSerial read didn't return). Pick tape manually.");
   }
   try { compose(); } catch (e) { /* QR offline etc. */ }
