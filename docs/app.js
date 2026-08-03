@@ -245,14 +245,26 @@ async function connect() {
     if (!opened) throw lastErr;
     log("connected.");
     $("printBtn").disabled = false; $("detectBtn").disabled = false; $("feedBtn").disabled = false;
+    $("connectBtn").disabled = true; $("disconnectBtn").disabled = false;
     port.addEventListener("disconnect", () => {
       port = null;
       $("printBtn").disabled = true; $("detectBtn").disabled = true; $("feedBtn").disabled = true;
+      $("connectBtn").disabled = false; $("disconnectBtn").disabled = true;
       log("printer disconnected — reconnect to print again.");
     });
     await new Promise((r) => setTimeout(r, 900));      // let the SPP link settle before the first status read
     await detectTape();                                // proactive detect on connect
   } catch (e) { log("connect failed: " + e.message); }
+}
+
+async function disconnect() {
+  if (!port) return;
+  const p = port; port = null;                         // stop new ops, then close (releases the COM port)
+  detecting = false;
+  try { await p.close(); } catch (e) { /* a read/write may be briefly locked mid-op — ignore */ }
+  $("printBtn").disabled = true; $("detectBtn").disabled = true; $("feedBtn").disabled = true;
+  $("connectBtn").disabled = false; $("disconnectBtn").disabled = true;
+  log("disconnected.");
 }
 
 async function writeBytes(bytes) {
@@ -337,6 +349,7 @@ async function feedOut() {
 window.addEventListener("DOMContentLoaded", () => {
   const refresh = () => { try { compose(); } catch (e) { /* QR offline etc. */ } };
   $("connectBtn").addEventListener("click", connect);
+  $("disconnectBtn").addEventListener("click", disconnect);
   $("detectBtn").addEventListener("click", detectTape);
   $("printBtn").addEventListener("click", printLabel);
   $("feedBtn").addEventListener("click", feedOut);
