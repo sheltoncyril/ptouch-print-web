@@ -30,21 +30,38 @@ function resolveFlip(flip, mediaType) {
 function printableSpan(printable) { return Math.floor((RASTER_WIDTH - printable) / 2); }   // x0
 
 /* ---- render content to a tight black-on-white canvas ---- */
-function renderText(text, family = "Arial, sans-serif", weight = "bold") {
-  const F = 128;
+// Render text AT its final dot height (boxPx tall incl. margin) so it stays crisp — no big
+// render then downscale (which + 1-bit = mush). Font size is chosen to hit the glyph height.
+function renderText(text, family = "Arial, sans-serif", weight = "bold", boxPx = 64) {
+  const padX = 4, padY = 6;                            // margin so anti-aliased glyph edges aren't clipped
+  const glyphPx = Math.max(6, boxPx - padY * 2);
+  const ref = 256;                                     // measure at a big ref, then scale the font size
+  const rctx = document.createElement("canvas").getContext("2d");
+  rctx.font = `${weight} ${ref}px ${family}`;
+  const rm = rctx.measureText(text);
+  const gH = (rm.actualBoundingBoxAscent + rm.actualBoundingBoxDescent) || ref;
+  const F = Math.max(6, Math.round(ref * glyphPx / gH));
   const fontStr = `${weight} ${F}px ${family}`;
   const meas = document.createElement("canvas").getContext("2d");
   meas.font = fontStr;
   const m = meas.measureText(text);
   const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
   const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
-  const w = Math.max(1, Math.ceil(left + right));
-  const h = Math.max(1, Math.ceil(asc + desc));
+  const w = Math.max(1, Math.ceil(left + right)) + padX * 2;
+  const h = Math.max(1, Math.ceil(asc + desc)) + padY * 2;
   const c = document.createElement("canvas"); c.width = w; c.height = h;
   const ctx = c.getContext("2d");
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = "#000"; ctx.font = fontStr; ctx.textBaseline = "alphabetic";
-  ctx.fillText(text, left, asc);
+  ctx.fillText(text, padX + left, padY + asc);
+  return c;
+}
+
+function resizeNearest(img, targetH) {                 // crisp block-scale (QR modules stay sharp)
+  const w = Math.max(1, Math.round(img.width * targetH / img.height));
+  const c = document.createElement("canvas"); c.width = w; c.height = targetH;
+  const ctx = c.getContext("2d"); ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(img, 0, 0, w, targetH);
   return c;
 }
 function renderQR(data) {
@@ -56,6 +73,19 @@ function renderQR(data) {
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, n, n);
   ctx.fillStyle = "#000";
   for (let r = 0; r < n; r++) for (let col = 0; col < n; col++) if (qr.isDark(r, col)) ctx.fillRect(col, r, 1, 1);
+  return c;
+}
+
+/* ---- align content across the tape width (no scaling). Returns a printable-tall canvas
+   so the existing rotate/pack pipeline below is untouched. ---- */
+function placeInBand(content, printable, align) {
+  if (content.height >= printable) return content;     // already fills the band
+  const c = document.createElement("canvas"); c.width = content.width; c.height = printable;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, content.width, printable);
+  const y = align === "top" ? 0 : align === "bottom" ? (printable - content.height)
+                                                      : Math.round((printable - content.height) / 2);
+  ctx.drawImage(content, 0, y);                        // no scaling — content already sized
   return c;
 }
 
@@ -183,15 +213,19 @@ function currentParams() {
   const saveTape = $("nofeed").checked;                // 0C terminator: print + hold (no auto-feed)
   const font = $("font").value;
   const weight = $("bold").checked ? "bold" : "normal";
-  return { mode, tape, flip, mediaType, saveTape, font, weight };
+  const scale = parseFloat($("size").value) || 1;
+  const align = $("valign").value;
+  return { mode, tape, flip, mediaType, saveTape, font, weight, scale, align };
 }
 
 function compose() {
-  const { mode, tape, flip, mediaType, saveTape, font, weight } = currentParams();
+  const { mode, tape, flip, mediaType, saveTape, font, weight, scale, align } = currentParams();
   const printable = printableDots(tape);
   const doFlip = resolveFlip(flip, mediaType);
   const text = $("data").value || " ";
-  const content = mode === "qr" ? renderQR(text) : renderText(text, font, weight);
+  const boxPx = Math.max(8, Math.round(printable * scale));      // target content height in dots
+  const raw = mode === "qr" ? resizeNearest(renderQR(text), boxPx) : renderText(text, font, weight, boxPx);
+  const content = placeInBand(raw, printable, align);            // vertical align (no scaling)
   const asm = assemble(buildRows(content, printable, doFlip), printable, $("cutlines").checked, doFlip);
   drawPreview(content, tape, printable, asm);
   return { rows: asm.rows, tape, mediaType, doFlip, saveTape };
@@ -228,21 +262,27 @@ async function writeBytes(bytes) {
   } finally { writer.releaseLock(); }
 }
 
+async function readStatusOnce() {
+  await writeBytes(new Uint8Array([0x1B, 0x40, 0x1B, 0x69, 0x53]));   // ESC @  ESC i S
+  const reader = port.readable.getReader();
+  const chunks = []; let total = 0;
+  const timeout = new Promise((res) => setTimeout(() => res("t"), 1200));
+  try {
+    while (total < 32) {
+      const r = await Promise.race([reader.read(), timeout]);
+      if (r === "t" || r.done) break;
+      chunks.push(r.value); total += r.value.length;
+    }
+  } finally { try { await reader.cancel(); } catch (e) {} reader.releaseLock(); }
+  const data = new Uint8Array(total); let o = 0; for (const c of chunks) { data.set(c, o); o += c.length; }
+  return data;
+}
+
 async function detectTape() {
   if (!port || !port.readable || !port.writable) { log("connect first (port not open)."); return; }
   try {
-    await writeBytes(new Uint8Array([0x1B, 0x40, 0x1B, 0x69, 0x53]));   // ESC @  ESC i S
-    const reader = port.readable.getReader();
-    const chunks = []; let total = 0;
-    const timeout = new Promise((res) => setTimeout(() => res("t"), 1200));
-    try {
-      while (total < 32) {
-        const r = await Promise.race([reader.read(), timeout]);
-        if (r === "t" || r.done) break;
-        chunks.push(r.value); total += r.value.length;
-      }
-    } finally { try { await reader.cancel(); } catch (e) {} reader.releaseLock(); }
-    const data = new Uint8Array(total); let o = 0; for (const c of chunks) { data.set(c, o); o += c.length; }
+    await readStatusOnce();                    // discard: right after a tape swap this reports the OLD tape
+    const data = await readStatusOnce();        // second read is the current tape
     if (data.length >= 12 && data[0] === 0x80) {
       const width = data[10], type = data[11], hs = HEAT_SHRINK_TYPES.has(type);
       detectedTape = width; detectedType = type;
@@ -291,6 +331,8 @@ window.addEventListener("DOMContentLoaded", () => {
   $("cutlines").addEventListener("change", refresh);
   $("font").addEventListener("change", refresh);
   $("bold").addEventListener("change", refresh);
+  $("size").addEventListener("change", refresh);
+  $("valign").addEventListener("change", refresh);
   // switching width/media to "auto" re-detects (if connected); otherwise just re-render
   ["tape", "media"].forEach((id) => $(id).addEventListener("change", () => {
     if ($(id).value === "auto" && port) { detectTape(); } else { refresh(); }

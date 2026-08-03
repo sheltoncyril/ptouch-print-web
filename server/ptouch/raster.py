@@ -128,6 +128,36 @@ def _raster_cmd(row, compress):
     return bytes([0x47, BYTES_PER_LINE, 0x00]) + row
 
 
+def _render_sized(text, qr, font, height, printable, scale):
+    """Render content AT its final dot height so it stays crisp (no downscale + 1-bit mush):
+    text at a scaled font size, QR block-resized with nearest-neighbour."""
+    base_h = height or max(8, printable - 4)
+    render_h = max(8, min(printable, round(base_h * max(0.05, scale))))
+    if qr:
+        img = render_qr(qr)
+        if scale < 1.0:
+            from PIL import Image
+            th = max(8, round(printable * scale))
+            cw, ch = img.size
+            img = img.resize((max(1, round(cw * th / ch)), th), Image.NEAREST)
+        return img
+    return render_text(text, font, render_h)
+
+
+def place_in_band(img, printable, align="center"):
+    """Position content across the tape width (NO scaling — content is already rendered at its
+    target size, so no downscale/threshold mush). Returns a printable-tall image so to_raster
+    centres/rotates it unchanged. Mirrors app.js placeInBand."""
+    from PIL import Image
+    cw, ch = img.size
+    if ch >= printable:
+        return img
+    canvas = Image.new("1", (cw, printable), 1)
+    y = 0 if align == "top" else (printable - ch) if align == "bottom" else (printable - ch) // 2
+    canvas.paste(img.convert("1"), (0, y))
+    return canvas
+
+
 def build_job(rows, tape_mm, media_type=0x01, save_tape=False, compress=False):
     n = len(rows)
     job = bytearray()
@@ -189,11 +219,11 @@ def rows_to_image(rows):
 
 
 def compose(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None, height=0,
-            save_tape=False, cut=False):
+            save_tape=False, cut=False, scale=1.0, align="center"):
     printable = printable_dots(tape)
     do_flip = resolve_flip(flip, media_type)
-    h = height or max(8, printable - 4)
-    content = render_qr(qr) if qr else render_text(text, font, h)
+    content = _render_sized(text, qr, font, height, printable, scale)   # rendered AT target size
+    content = place_in_band(content, printable, align)
     rows, _ = to_raster(content, printable, do_flip)
     if cut:
         rows = assemble_cut(rows, printable, do_flip)
@@ -204,12 +234,13 @@ def compose(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None
     }
 
 
-def compose_rows(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None, height=0, cut=False):
+def compose_rows(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None, height=0,
+                 cut=False, scale=1.0, align="center"):
     """Raster rows for a single label (no job wrapper) — used by batch printing."""
     printable = printable_dots(tape)
     do_flip = resolve_flip(flip, media_type)
-    h = height or max(8, printable - 4)
-    content = render_qr(qr) if qr else render_text(text, font, h)
+    content = _render_sized(text, qr, font, height, printable, scale)
+    content = place_in_band(content, printable, align)
     rows, _ = to_raster(content, printable, do_flip)
     if cut:
         rows = assemble_cut(rows, printable, do_flip)

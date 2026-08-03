@@ -40,28 +40,34 @@ def decode_error(err1, err2):
 
 
 def read_status(ser):
-    """ESC i S -> 32-byte status block. Returns dict (incl. decoded 'error') or None."""
+    """ESC i S -> 32-byte status block. Returns dict (incl. decoded 'error') or None.
+    Queries TWICE and keeps the last: right after a tape swap the first read can still
+    report the PREVIOUS cartridge (stale), the second reports the current one."""
+    data = b""
     try:
-        ser.reset_input_buffer()
-        ser.write(bytes([0x1B, 0x40, 0x1B, 0x69, 0x53]))     # ESC @ then ESC i S
-        ser.flush()
-        time.sleep(0.4)
-        data = ser.read(32)
-        if len(data) >= 12 and data[0] == 0x80:
-            e1, e2 = (data[8], data[9]) if len(data) >= 10 else (0, 0)
-            return {
-                "width": data[10],
-                "type": data[11],
-                "heat_shrink": data[11] in raster.HEAT_SHRINK_TYPES,
-                "err": e1 | e2,
-                "err1": e1, "err2": e2,
-                "error": decode_error(e1, e2),
-                "weak_battery": bool(e1 & 0x08),
-                "phase": data[19] if len(data) >= 20 else 0,
-                "raw": bytes(data).hex(),
-            }
+        for _ in range(2):
+            ser.reset_input_buffer()
+            ser.write(bytes([0x1B, 0x40, 0x1B, 0x69, 0x53]))     # ESC @ then ESC i S
+            ser.flush()
+            time.sleep(0.4)
+            d = ser.read(32)
+            if len(d) >= 12 and d[0] == 0x80:
+                data = d
     except Exception:
         pass
+    if len(data) >= 12 and data[0] == 0x80:
+        e1, e2 = (data[8], data[9]) if len(data) >= 10 else (0, 0)
+        return {
+            "width": data[10],
+            "type": data[11],
+            "heat_shrink": data[11] in raster.HEAT_SHRINK_TYPES,
+            "err": e1 | e2,
+            "err1": e1, "err2": e2,
+            "error": decode_error(e1, e2),
+            "weak_battery": bool(e1 & 0x08),
+            "phase": data[19] if len(data) >= 20 else 0,
+            "raw": bytes(data).hex(),
+        }
     return None
 
 
@@ -141,7 +147,8 @@ def feed_out(port=DEFAULT_PORT):
 
 
 def print_label(text=None, qr=None, tape=None, flip="auto", font=None, height=0,
-                port=DEFAULT_PORT, media_type=None, save_tape=False, cut=False):
+                port=DEFAULT_PORT, media_type=None, save_tape=False, cut=False,
+                scale=1.0, align="center"):
     """Compose and print. Omit `tape` to auto-detect width+media from the printer."""
     if not (text or qr):
         raise ValueError("text or qr is required")
@@ -166,7 +173,8 @@ def print_label(text=None, qr=None, tape=None, flip="auto", font=None, height=0,
             why = (st and st.get("error")) or "busy/red — power-cycle if red, else wait and retry"
             raise RuntimeError(f"printer not ready: {why}")
         comp = raster.compose(text=text, qr=qr, tape=tape, media_type=media_type,
-                              flip=flip, font=font, height=height, save_tape=save_tape, cut=cut)
+                              flip=flip, font=font, height=height, save_tape=save_tape, cut=cut,
+                              scale=scale, align=align)
         send_job(ser, comp["job"])
         return {
             "printed": True, "tape": tape, "flip": comp["flip"],

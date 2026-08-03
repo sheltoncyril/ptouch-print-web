@@ -24,9 +24,13 @@ def main():
                     help="de-mirror: auto (by media), on (laminated), off (heat-shrink)")
     ap.add_argument("--chain", dest="save_tape", action="store_true",
                     help="chain printing (batch tape-saving); a single label stays inside until the next print")
-    ap.add_argument("--cut", action="store_true", help="print cut-line marks at both ends")
+    ap.add_argument("--cut", action="store_true", help="print a thin dotted cut-line guide (reading-left)")
     ap.add_argument("--font")
     ap.add_argument("--height", type=int, default=0)
+    ap.add_argument("--size", type=float, default=1.0,
+                    help="text height as a fraction of the tape (1=fit, 0.5=half)")
+    ap.add_argument("--align", choices=["center", "top", "bottom"], default="center",
+                    help="position across the tape width when below fit")
     ap.add_argument("--dry", metavar="PNG", help="render a preview PNG, do not print")
     ap.add_argument("--status", action="store_true", help="query loaded tape/media and exit")
     ap.add_argument("--feed", action="store_true",
@@ -49,7 +53,8 @@ def main():
         from PIL import Image
         tape = a.tape or 12
         comp = raster.compose(text=a.text, qr=a.qr, tape=tape, flip=a.flip,
-                              font=a.font, height=a.height, save_tape=a.save_tape, cut=a.cut)
+                              font=a.font, height=a.height, save_tape=a.save_tape, cut=a.cut,
+                              scale=a.size, align=a.align)
         c = comp["canvas"]
         c.resize((raster.RASTER_WIDTH * 4, c.size[1] * 4), Image.NEAREST).save(a.dry)
         print(f"DRY tape={tape}mm flip={'on' if comp['flip'] else 'off'} "
@@ -57,7 +62,8 @@ def main():
         return
 
     print(printer.print_label(text=a.text, qr=a.qr, tape=a.tape, flip=a.flip,
-                              font=a.font, height=a.height, port=a.port, save_tape=a.save_tape, cut=a.cut))
+                              font=a.font, height=a.height, port=a.port, save_tape=a.save_tape, cut=a.cut,
+                              scale=a.size, align=a.align))
 
 
 if __name__ == "__main__":
