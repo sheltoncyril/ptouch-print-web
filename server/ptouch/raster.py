@@ -20,11 +20,7 @@ CUT_GAP_DOTS = 12                        # blank margin either side of a cut lin
 CUT_LINE_DOTS = 1                        # cut-line thickness along the tape (~0.14mm) — thin guide
 CUT_DASH = 2                             # dotted line: dot pitch across the width (2 = every other dot)
 
-# Bundled brand logos (ink-trimmed bitmaps shared with the web app). Anything else passed as `logo`
-# is treated as an image path.
-BRAND_DIR = Path(__file__).resolve().parents[2] / "docs" / "brand"
-LOGOS = {"lockup": "logo-lockup.png", "wordmark": "logo-wordmark.png", "mark": "logo-mark.png"}
-QR_MIN_MODULE_DOTS = 2                   # below this thermal bleed makes a QR unscannable
+QR_MIN_MODULE_DOTS = 2                  # below this thermal bleed makes a QR unscannable
 _QR_ALNUM = re.compile(r"[0-9A-Z $%*+\-./:]+")
 _URL_HOST = re.compile(r"^(https?)://([A-Za-z0-9.-]+(?::\d+)?)(?=[/?#]|$)", re.I)
 
@@ -100,12 +96,13 @@ def qr_matrix(data):
 
 
 def load_logo(logo, height):
-    """Logo (bundled key or image path) as a 1-bit image `height` dots tall: flattened onto white,
-    trimmed to its ink, scaled with an anti-aliased downsample, then thresholded."""
+    """Logo (path to a PNG/JPG/...) as a 1-bit image `height` dots tall: flattened onto white,
+    trimmed to its ink, scaled with an anti-aliased downsample, then thresholded. No logo ships
+    with this project — the caller supplies their own file."""
     from PIL import Image, ImageOps
-    path = BRAND_DIR / LOGOS[logo] if logo in LOGOS else Path(logo)
+    path = Path(logo).expanduser()
     if not path.is_file():
-        raise FileNotFoundError(f"logo not found: {logo!r} (bundled: {', '.join(LOGOS)})")
+        raise FileNotFoundError(f"logo not found: {logo!r}")
     im = Image.open(path).convert("RGBA")
     flat = Image.new("RGBA", im.size, (255, 255, 255, 255))
     flat.alpha_composite(im)

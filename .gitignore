@@ -11,3 +11,9 @@ dist/
 *.png
 !docs/**/*.png
 .env
+
+# Personal / brand assets — this is a public repo; keep logos out of it
+brand/
+logo*.png
+logo*.svg
+logo*.jpg
