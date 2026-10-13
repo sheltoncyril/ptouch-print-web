@@ -25,9 +25,23 @@
         <div class="row">
           <label><input type="radio" name="mode" value="text" checked> Text</label>
           <label><input type="radio" name="mode" value="qr"> QR</label>
+          <label><input type="radio" name="mode" value="logo"> Logo + QR</label>
         </div>
         <input id="data" type="text" placeholder="10kΩ" value="10kΩ" autocomplete="off">
-        <div class="row">
+        <div id="logoOpts" hidden>
+          <div class="row">
+            <label>Logo
+              <select id="logo">
+                <option value="lockup" selected>Mark + name</option>
+                <option value="wordmark">Name only</option>
+                <option value="mark">Mark only</option>
+              </select>
+            </label>
+          </div>
+          <input id="logoUrl" type="text" placeholder="https://shunt.works (blank = logo only)" value="https://shunt.works" autocomplete="off" inputmode="url">
+          <p class="hint" id="logoInfo"></p>
+        </div>
+        <div class="row" id="fontRow">
           <label>Font
             <select id="font">
               <option value="Arial, sans-serif" selected>Arial</option>
@@ -110,6 +124,6 @@
 
     <footer>Chromium (Chrome/Edge) only · needs HTTPS or localhost · printer must be paired &amp; awake</footer>
   </main>
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

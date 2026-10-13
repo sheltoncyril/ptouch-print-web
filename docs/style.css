@@ -9,6 +9,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }   /* author display rules (.row etc.) must not un-hide these */
 body {
   margin: 0; background: var(--bg); color: var(--fg);
   font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;

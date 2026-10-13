@@ -148,10 +148,13 @@ def feed_out(port=DEFAULT_PORT):
 
 def print_label(text=None, qr=None, tape=None, flip="auto", font=None, height=0,
                 port=DEFAULT_PORT, media_type=None, save_tape=False, cut=False,
-                scale=1.0, align="center"):
-    """Compose and print. Omit `tape` to auto-detect width+media from the printer."""
-    if not (text or qr):
-        raise ValueError("text or qr is required")
+                scale=1.0, align="center", logo=None):
+    """Compose and print. Omit `tape` to auto-detect width+media from the printer.
+    `logo` (a bundled name — lockup | wordmark | mark — or an image path) prints alone or beside `qr`."""
+    if not (text or qr or logo):
+        raise ValueError("text, qr or logo is required")
+    if logo and text:
+        raise ValueError("logo can't be combined with text (use logo + qr, or logo alone)")
     ser = open_port(port)
     try:
         reset(ser)                                    # clear any prior stall/red without a power-cycle
@@ -174,7 +177,7 @@ def print_label(text=None, qr=None, tape=None, flip="auto", font=None, height=0,
             raise RuntimeError(f"printer not ready: {why}")
         comp = raster.compose(text=text, qr=qr, tape=tape, media_type=media_type,
                               flip=flip, font=font, height=height, save_tape=save_tape, cut=cut,
-                              scale=scale, align=align)
+                              scale=scale, align=align, logo=logo)
         send_job(ser, comp["job"])
         return {
             "printed": True, "tape": tape, "flip": comp["flip"],

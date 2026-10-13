@@ -9,6 +9,9 @@ _packbits encoder is kept for full PT models that do support mode 2.
 """
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 RASTER_WIDTH = 128                       # dots across the print head
 BYTES_PER_LINE = RASTER_WIDTH // 8       # 16
 HEAT_SHRINK_TYPES = {0x11, 0x17}         # HS 2:1 / 3:1 tube -> read from the outside, do NOT mirror
@@ -16,6 +19,14 @@ _KNOWN_PRINTABLE = {6: 32, 9: 50, 12: 64, 18: 64, 24: 64}     # P300BT caps prin
 CUT_GAP_DOTS = 12                        # blank margin either side of a cut line (~1.7mm)
 CUT_LINE_DOTS = 1                        # cut-line thickness along the tape (~0.14mm) — thin guide
 CUT_DASH = 2                             # dotted line: dot pitch across the width (2 = every other dot)
+
+# Bundled brand logos (ink-trimmed bitmaps shared with the web app). Anything else passed as `logo`
+# is treated as an image path.
+BRAND_DIR = Path(__file__).resolve().parents[2] / "docs" / "brand"
+LOGOS = {"lockup": "logo-lockup.png", "wordmark": "logo-wordmark.png", "mark": "logo-mark.png"}
+QR_MIN_MODULE_DOTS = 2                   # below this thermal bleed makes a QR unscannable
+_QR_ALNUM = re.compile(r"[0-9A-Z $%*+\-./:]+")
+_URL_HOST = re.compile(r"^(https?)://([A-Za-z0-9.-]+(?::\d+)?)(?=[/?#]|$)", re.I)
 
 
 def printable_dots(width_mm: int) -> int:
@@ -63,6 +74,81 @@ def render_qr(data, box=2, border=1):
     qr.add_data(data)
     qr.make(fit=True)
     return qr.make_image(fill_color="black", back_color="white").convert("1")
+
+
+def qr_payload(data):
+    """Upper-case the scheme + host of a URL so the QR can use the much denser alphanumeric mode
+    (both are case-insensitive, so it opens identically). The path/query are left exactly as given."""
+    m = _URL_HOST.match(data)
+    if not m:
+        return data
+    return m.group(1).upper() + "://" + m.group(2).upper() + data[m.end():]
+
+
+def qr_matrix(data):
+    """QR module grid (rows of bool, True = dark, no quiet zone) at the smallest version that fits,
+    ECC M. A payload made only of alphanumeric-set characters is encoded in alphanumeric mode."""
+    import qrcode
+    from qrcode import util
+    qr = qrcode.QRCode(border=0, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    if _QR_ALNUM.fullmatch(data):
+        qr.add_data(util.QRData(data, mode=util.MODE_ALPHA_NUM))
+    else:
+        qr.add_data(data)
+    qr.make(fit=True)
+    return qr.get_matrix()
+
+
+def load_logo(logo, height):
+    """Logo (bundled key or image path) as a 1-bit image `height` dots tall: flattened onto white,
+    trimmed to its ink, scaled with an anti-aliased downsample, then thresholded."""
+    from PIL import Image, ImageOps
+    path = BRAND_DIR / LOGOS[logo] if logo in LOGOS else Path(logo)
+    if not path.is_file():
+        raise FileNotFoundError(f"logo not found: {logo!r} (bundled: {', '.join(LOGOS)})")
+    im = Image.open(path).convert("RGBA")
+    flat = Image.new("RGBA", im.size, (255, 255, 255, 255))
+    flat.alpha_composite(im)
+    gray = flat.convert("L")
+    bbox = ImageOps.invert(gray).point(lambda p: 255 if p > 24 else 0).getbbox()
+    if bbox:
+        gray = gray.crop(bbox)
+    w = max(1, round(gray.width * height / gray.height))
+    gray = gray.resize((w, height), Image.LANCZOS)
+    return gray.point(lambda p: 255 if p >= 128 else 0).convert("1")
+
+
+def render_logo_qr(logo, qr, height):
+    """[ pad | logo | gap | QR | pad ] exactly `height` dots tall (the tape's printable band).
+    QR modules are whole dots (>= QR_MIN_MODULE_DOTS) — fractional scaling is what makes 1-bit
+    thermal QR codes unreadable. Either part may be omitted (logo-only / QR-only). Mirrors app.js."""
+    from PIL import Image
+    mark = load_logo(logo, height) if logo else None
+    grid, m = None, 0
+    if qr:
+        grid = qr_matrix(qr_payload(qr))
+        n = len(grid)
+        m = height // n
+        if m < QR_MIN_MODULE_DOTS:
+            raise ValueError(f"QR for {qr!r} is {n} modules wide but the band is only {height} dots "
+                             f"(< {QR_MIN_MODULE_DOTS} dots/module): use wider tape (>= 9 mm) or a shorter URL")
+    pad = 4 * m if m else 8                          # >= 4 modules of quiet zone at each end
+    gap = 6 * m if (mark and m) else 0
+    mw = mark.width if mark else 0
+    qw = len(grid) * m if grid else 0
+    img = Image.new("1", (pad + mw + gap + qw + pad, height), 1)
+    x = pad
+    if mark:
+        img.paste(mark, (x, 0))
+        x += mw + gap
+    if grid:
+        y0 = (height - qw) // 2
+        for r, row in enumerate(grid):
+            for c, dark in enumerate(row):
+                if dark:
+                    px, py = x + c * m, y0 + r * m
+                    img.paste(0, (px, py, px + m, py + m))
+    return img
 
 
 def to_raster(content_img, printable, flip=True):
@@ -128,11 +214,13 @@ def _raster_cmd(row, compress):
     return bytes([0x47, BYTES_PER_LINE, 0x00]) + row
 
 
-def _render_sized(text, qr, font, height, printable, scale):
+def _render_sized(text, qr, font, height, printable, scale, logo=None):
     """Render content AT its final dot height so it stays crisp (no downscale + 1-bit mush):
     text at a scaled font size, QR block-resized with nearest-neighbour."""
     base_h = height or max(8, printable - 4)
     render_h = max(8, min(printable, round(base_h * max(0.05, scale))))
+    if logo:
+        return render_logo_qr(logo, qr, max(8, round(printable * max(0.05, scale))))
     if qr:
         img = render_qr(qr)
         if scale < 1.0:
@@ -219,10 +307,12 @@ def rows_to_image(rows):
 
 
 def compose(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None, height=0,
-            save_tape=False, cut=False, scale=1.0, align="center"):
+            save_tape=False, cut=False, scale=1.0, align="center", logo=None):
+    if logo and text:
+        raise ValueError("logo can't be combined with text (use logo + qr, or logo alone)")
     printable = printable_dots(tape)
     do_flip = resolve_flip(flip, media_type)
-    content = _render_sized(text, qr, font, height, printable, scale)   # rendered AT target size
+    content = _render_sized(text, qr, font, height, printable, scale, logo)   # rendered AT target size
     content = place_in_band(content, printable, align)
     rows, _ = to_raster(content, printable, do_flip)
     if cut:
@@ -235,11 +325,11 @@ def compose(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None
 
 
 def compose_rows(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None, height=0,
-                 cut=False, scale=1.0, align="center"):
+                 cut=False, scale=1.0, align="center", logo=None):
     """Raster rows for a single label (no job wrapper) — used by batch printing."""
     printable = printable_dots(tape)
     do_flip = resolve_flip(flip, media_type)
-    content = _render_sized(text, qr, font, height, printable, scale)
+    content = _render_sized(text, qr, font, height, printable, scale, logo)
     content = place_in_band(content, printable, align)
     rows, _ = to_raster(content, printable, do_flip)
     if cut:
