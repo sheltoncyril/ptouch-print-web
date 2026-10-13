@@ -103,7 +103,10 @@ def load_logo(logo, height):
     path = Path(logo).expanduser()
     if not path.is_file():
         raise FileNotFoundError(f"logo not found: {logo!r}")
-    im = Image.open(path).convert("RGBA")
+    try:
+        im = Image.open(path).convert("RGBA")
+    except (OSError, Image.DecompressionBombError) as e:     # not an image / corrupt / absurdly large
+        raise ValueError(f"can't read logo image {str(logo)!r}: {e}") from e
     flat = Image.new("RGBA", im.size, (255, 255, 255, 255))
     flat.alpha_composite(im)
     gray = flat.convert("L")

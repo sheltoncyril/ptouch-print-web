@@ -17,11 +17,13 @@ const CUT_DASH = 2;                                    // dotted line: dot pitch
 // browser's localStorage — no logo or brand asset ships with this app.
 const LOGO_KEY = "ptouch.logo", LOGO_NAME_KEY = "ptouch.logoName", LOGO_URL_KEY = "ptouch.logoUrl";
 const LOGO_MAX_H = 256;                                // stored/working logo height (4x the 64-dot print band)
+const LOGO_MAX_SRC = 2048;                             // longest source side we ever read pixels from (big photos are scaled first)
 const QR_MIN_MODULE_DOTS = 2;                          // below this thermal bleed makes a QR unscannable
 const QR_ALNUM = /^[0-9A-Z $%*+\-./:]+$/;
 const URL_HOST = /^(https?):\/\/([A-Za-z0-9.-]+(?::\d+)?)(?=[/?#]|$)/i;
 let logoCanvas = null;                                 // the user's logo: ink-trimmed, <= LOGO_MAX_H tall
 let logoName = "";
+let logoGen = 0;                                       // bumped on every pick/removal so a slower earlier load can't overwrite it
 
 let port = null;
 let detectedTape = null;
@@ -104,7 +106,9 @@ function qrModules(data) {
 /* Flatten an uploaded image onto white, trim to its ink, and (step-wise) downscale to <= LOGO_MAX_H.
    Mirrors raster.load_logo's trim; accepts PNG/JPG/SVG with or without transparency. */
 function prepLogo(img) {
-  const w = img.naturalWidth || 1024, h = img.naturalHeight || 1024;
+  const nw = img.naturalWidth || 1024, nh = img.naturalHeight || 1024;
+  const k = Math.min(1, LOGO_MAX_SRC / Math.max(nw, nh));        // bound the work BEFORE allocating / reading pixels
+  const w = Math.max(1, Math.round(nw * k)), h = Math.max(1, Math.round(nh * k));
   const c = document.createElement("canvas"); c.width = w; c.height = h;
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
@@ -502,7 +506,10 @@ window.addEventListener("DOMContentLoaded", () => {
   }));
   document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener("change", () => { syncMode(); refresh(); }));
   // Logo + QR: logo + URL are the user's own and live only in this browser (localStorage).
-  const store = (k, v) => { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) { /* private mode / quota */ } };
+  const store = (k, v) => {                             // true when the write/removal actually happened
+    try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); return true; }
+    catch (e) { return false; }                         // private mode / quota
+  };
   const fetchStored = (k) => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } };
   const setLogo = (canvas, name) => {
     logoCanvas = canvas; logoName = canvas ? name : "";
@@ -512,21 +519,29 @@ window.addEventListener("DOMContentLoaded", () => {
   $("logoFile").addEventListener("change", async () => {
     const f = $("logoFile").files[0];
     if (!f) return;
+    const gen = ++logoGen;                              // supersedes any pending restore or earlier pick
     const u = URL.createObjectURL(f);
     try {
       const c = prepLogo(await loadImage(u));
-      store(LOGO_KEY, c.toDataURL("image/png")); store(LOGO_NAME_KEY, f.name);
+      if (gen !== logoGen) return;                      // a newer pick/removal happened while this one decoded
+      if (store(LOGO_KEY, c.toDataURL("image/png"))) {
+        store(LOGO_NAME_KEY, f.name);
+      } else {                                          // don't leave an OLD stored image under the new file's name
+        store(LOGO_KEY, null); store(LOGO_NAME_KEY, null);
+        log("logo not saved (browser storage is full or unavailable) — it's used for this session only.");
+      }
       setLogo(c, f.name);
     } catch (e) { log("logo not loaded: " + e.message); }
     finally { URL.revokeObjectURL(u); $("logoFile").value = ""; }
   });
-  $("logoClear").addEventListener("click", () => { store(LOGO_KEY, null); store(LOGO_NAME_KEY, null); setLogo(null); });
+  $("logoClear").addEventListener("click", () => { logoGen++; store(LOGO_KEY, null); store(LOGO_NAME_KEY, null); setLogo(null); });
   $("logoUrl").addEventListener("input", () => { store(LOGO_URL_KEY, $("logoUrl").value); refresh(); });
   $("logoUrl").value = fetchStored(LOGO_URL_KEY);
   const savedLogo = fetchStored(LOGO_KEY);
   if (savedLogo) {
-    loadImage(savedLogo).then((im) => setLogo(prepLogo(im), fetchStored(LOGO_NAME_KEY)))
-      .catch(() => { store(LOGO_KEY, null); store(LOGO_NAME_KEY, null); });
+    const gen = logoGen;                                // a pick/removal made before this resolves wins
+    loadImage(savedLogo).then((im) => { if (gen === logoGen) setLogo(prepLogo(im), fetchStored(LOGO_NAME_KEY)); })
+      .catch(() => { if (gen === logoGen) { store(LOGO_KEY, null); store(LOGO_NAME_KEY, null); } });
   }
   if (!("serial" in navigator)) log("WebSerial not available. Use Chrome/Edge over https or localhost.");
   if (typeof qrcode === "undefined") {
