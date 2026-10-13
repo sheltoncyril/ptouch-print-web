@@ -46,6 +46,7 @@ python ptprint.py --text "BOX-A"                    # auto-detect tape, print to
 python ptprint.py --qr "https://parts.d3n.sh/loc/42" --tape 12
 python ptprint.py --text "SHRINK" --flip off --tape 6     # heat-shrink: no mirror
 python ptprint.py --text "BOX-A" --dry preview.png --tape 6
+python ptprint.py --text "10kΩ" --font oxanium --slant          # bundled font + 22° lean (see Fonts)
 python ptprint.py --logo ./logo.png --qr "https://example.com"  # your logo + QR (see below)
 ```
 
@@ -77,6 +78,17 @@ uvicorn api:app --host 127.0.0.1 --port 8088
 # GET  /status
 # POST /print   {"text":"BOX-A","tape":6,"flip":"auto"}
 ```
+
+## Fonts
+
+Besides the usual system fonts, the web app's Font picker has four bundled open-source typefaces —
+**Oxanium**, **Chakra Petch**, **Jura** and **Orbitron** — plus a **Lean 22°** box that slants any
+font forward (a quick way to get a techno / trace-style lettering look). In the CLI:
+`--font oxanium|chakra-petch|jura|orbitron` (or a path to any TTF/OTF) and `--slant`.
+The files are unmodified SIL OFL 1.1 fonts in `docs/fonts/` (licences alongside).
+
+Characters a chosen font lacks (e.g. Ω in Orbitron) fall back to a system font, in both the web app
+and the CLI. Variable fonts are set to a bold or regular weight (the CLI always uses bold).
 
 ## Logo + QR label
 
