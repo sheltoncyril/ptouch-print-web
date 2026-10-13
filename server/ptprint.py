@@ -5,7 +5,7 @@
   python ptprint.py --qr "https://parts.d3n.sh/loc/42" --tape 12
   python ptprint.py --text "SHRINK" --flip off --tape 6      # heat-shrink: no mirror
   python ptprint.py --text "BOX-A" --dry preview.png --tape 6
-  python ptprint.py --logo lockup --qr "https://shunt.works"   # brand logo + QR (needs tape >= 9mm)
+  python ptprint.py --logo ./logo.png --qr "https://example.com"   # your logo + QR (needs tape >= 9mm)
   python ptprint.py --status
 """
 import argparse
@@ -18,9 +18,9 @@ def main():
     g = ap.add_mutually_exclusive_group(required=False)
     g.add_argument("--text")
     g.add_argument("--qr")
-    ap.add_argument("--logo", metavar="NAME|PATH",
-                    help=f"print a logo, alone or beside --qr: {' | '.join(raster.LOGOS)} (bundled) "
-                         "or a path to an image. Not combinable with --text")
+    ap.add_argument("--logo", metavar="PATH",
+                    help="print your own logo image (PNG/JPG; flattened onto white, trimmed, thresholded), "
+                         "alone or beside --qr. Not combinable with --text")
     ap.add_argument("--port", default=printer.DEFAULT_PORT)
     ap.add_argument("--tape", type=int, choices=[6, 9, 12],
                     help="loaded tape width mm — P300BT supports 6/9/12 (omit = auto-detect)")

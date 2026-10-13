@@ -31,15 +31,13 @@
         <div id="logoOpts" hidden>
           <div class="row">
             <label>Logo
-              <select id="logo">
-                <option value="lockup" selected>Mark + name</option>
-                <option value="wordmark">Name only</option>
-                <option value="mark">Mark only</option>
-              </select>
+              <input type="file" id="logoFile" accept="image/*">
             </label>
+            <button type="button" id="logoClear" hidden>Remove logo</button>
           </div>
-          <input id="logoUrl" type="text" placeholder="https://shunt.works (blank = logo only)" value="https://shunt.works" autocomplete="off" inputmode="url">
+          <input id="logoUrl" type="text" placeholder="https://example.com (blank = logo only)" autocomplete="off" inputmode="url">
           <p class="hint" id="logoInfo"></p>
+          <p class="hint">Your logo and URL stay in this browser (localStorage) — they're never uploaded.</p>
         </div>
         <div class="row" id="fontRow">
           <label>Font
@@ -124,6 +122,6 @@
 
     <footer>Chromium (Chrome/Edge) only · needs HTTPS or localhost · printer must be paired &amp; awake</footer>
   </main>
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

@@ -13,12 +13,17 @@ const CUT_GAP_DOTS = 12;                               // blank margin either si
 const CUT_LINE_DOTS = 1;                               // cut-line thickness along the tape (~0.14mm) — thin
 const CUT_DASH = 2;                                    // dotted line: dot pitch across the width
 
-// Brand logos for "Logo + QR" — ink-trimmed bitmaps, shared with the Python side (server/ptouch/raster.py LOGOS).
-const LOGO_SRC = { lockup: "brand/logo-lockup.png", wordmark: "brand/logo-wordmark.png", mark: "brand/logo-mark.png" };
+// "Logo + QR": the logo is supplied by the person using the page (file picker) and kept only in THIS
+// browser's localStorage — no logo or brand asset ships with this app.
+const LOGO_KEY = "ptouch.logo", LOGO_NAME_KEY = "ptouch.logoName", LOGO_URL_KEY = "ptouch.logoUrl";
+const LOGO_MAX_H = 256;                                // stored/working logo height (4x the 64-dot print band)
+const LOGO_MAX_SRC = 2048;                             // longest source side we ever read pixels from (big photos are scaled first)
 const QR_MIN_MODULE_DOTS = 2;                          // below this thermal bleed makes a QR unscannable
 const QR_ALNUM = /^[0-9A-Z $%*+\-./:]+$/;
 const URL_HOST = /^(https?):\/\/([A-Za-z0-9.-]+(?::\d+)?)(?=[/?#]|$)/i;
-const logoImgs = {};                                   // key -> loaded <img>
+let logoCanvas = null;                                 // the user's logo: ink-trimmed, <= LOGO_MAX_H tall
+let logoName = "";
+let logoGen = 0;                                       // bumped on every pick/removal so a slower earlier load can't overwrite it
 
 let port = null;
 let detectedTape = null;
@@ -98,6 +103,49 @@ function qrModules(data) {
   qr.make();
   return { n: qr.getModuleCount(), dark: (r, c) => qr.isDark(r, c) };
 }
+/* Flatten an uploaded image onto white, trim to its ink, and (step-wise) downscale to <= LOGO_MAX_H.
+   Mirrors raster.load_logo's trim; accepts PNG/JPG/SVG with or without transparency. */
+function prepLogo(img) {
+  const nw = img.naturalWidth || 1024, nh = img.naturalHeight || 1024;
+  const k = Math.min(1, LOGO_MAX_SRC / Math.max(nw, nh));        // bound the work BEFORE allocating / reading pixels
+  const w = Math.max(1, Math.round(nw * k)), h = Math.max(1, Math.round(nh * k));
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if ((d[i] + d[i + 1] + d[i + 2]) / 3 < 231) {      // anything not near-white is ink
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 < 0) throw new Error("that image has no dark pixels to print");
+  let cur = document.createElement("canvas"); cur.width = x1 - x0 + 1; cur.height = y1 - y0 + 1;
+  cur.getContext("2d").drawImage(c, x0, y0, cur.width, cur.height, 0, 0, cur.width, cur.height);
+  while (cur.height > LOGO_MAX_H) {                      // halve repeatedly: a single big jump aliases thin strokes
+    const nh = Math.max(LOGO_MAX_H, Math.ceil(cur.height / 2));
+    const nw = Math.max(1, Math.round(cur.width * nh / cur.height));
+    const n = document.createElement("canvas"); n.width = nw; n.height = nh;
+    const g = n.getContext("2d"); g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+    g.drawImage(cur, 0, 0, nw, nh);
+    cur = n;
+  }
+  return cur;
+}
+function loadImage(src) {
+  return new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = () => rej(new Error("couldn't read that image"));
+    im.src = src;
+  });
+}
+
 function renderLogoQR(logoImg, url, h) {
   let grid = null, m = 0;
   if (url) {
@@ -106,7 +154,7 @@ function renderLogoQR(logoImg, url, h) {
     if (m < QR_MIN_MODULE_DOTS)
       throw new Error(`QR is ${grid.n} modules wide but the band is only ${h} dots (< ${QR_MIN_MODULE_DOTS} dots/module): use wider tape (>= 9 mm) or a shorter URL`);
   }
-  const mw = logoImg ? Math.max(1, Math.round(logoImg.naturalWidth * h / logoImg.naturalHeight)) : 0;
+  const mw = logoImg ? Math.max(1, Math.round(logoImg.width * h / logoImg.height)) : 0;
   const pad = m ? 4 * m : 8;                           // >= 4 modules of quiet zone at each end
   const gap = (mw && m) ? 6 * m : 0;
   const qw = grid ? grid.n * m : 0;
@@ -286,12 +334,13 @@ function compose() {
   const boxPx = Math.max(8, Math.round(printable * scale));      // target content height in dots
   let raw, info = "";
   if (mode === "logo") {
-    const key = $("logo").value, img = logoImgs[key];
-    if (!img) throw new Error("logo image not loaded");
-    const r = renderLogoQR(img, $("logoUrl").value.trim(), boxPx);
+    const url = $("logoUrl").value.trim();
+    if (!logoCanvas && !url) throw new Error("choose a logo image and/or enter a URL");
+    const r = renderLogoQR(logoCanvas, url, boxPx);
     raw = r.canvas;
-    info = r.qrModules ? `QR ${r.qrModules}×${r.qrModules} modules at ${r.moduleDots} dots each (${(r.moduleDots * 25.4 / 180).toFixed(2)} mm)`
-                       : "logo only";
+    info = [logoCanvas ? `logo: ${logoName || "saved logo"}` : "no logo chosen (QR only)",
+            r.qrModules ? `QR ${r.qrModules}×${r.qrModules} modules at ${r.moduleDots} dots each (${(r.moduleDots * 25.4 / 180).toFixed(2)} mm)`
+                        : "no QR"].join(" · ");
   } else {
     raw = mode === "qr" ? resizeNearest(renderQR(text), boxPx) : renderText(text, font, weight, boxPx);
   }
@@ -456,14 +505,44 @@ window.addEventListener("DOMContentLoaded", () => {
     if ($(id).value === "auto" && port) { detectTape(); } else { refresh(); }
   }));
   document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener("change", () => { syncMode(); refresh(); }));
-  $("logo").addEventListener("change", refresh);
-  $("logoUrl").addEventListener("input", refresh);
-  Object.entries(LOGO_SRC).forEach(([key, src]) => {    // preload; re-render once each arrives
-    const im = new Image();
-    im.onload = () => { logoImgs[key] = im; refresh(); };
-    im.onerror = () => log(`logo "${key}" failed to load (${src})`);
-    im.src = src;
+  // Logo + QR: logo + URL are the user's own and live only in this browser (localStorage).
+  const store = (k, v) => {                             // true when the write/removal actually happened
+    try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); return true; }
+    catch (e) { return false; }                         // private mode / quota
+  };
+  const fetchStored = (k) => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } };
+  const setLogo = (canvas, name) => {
+    logoCanvas = canvas; logoName = canvas ? name : "";
+    $("logoClear").hidden = !canvas;
+    refresh();
+  };
+  $("logoFile").addEventListener("change", async () => {
+    const f = $("logoFile").files[0];
+    if (!f) return;
+    const gen = ++logoGen;                              // supersedes any pending restore or earlier pick
+    const u = URL.createObjectURL(f);
+    try {
+      const c = prepLogo(await loadImage(u));
+      if (gen !== logoGen) return;                      // a newer pick/removal happened while this one decoded
+      if (store(LOGO_KEY, c.toDataURL("image/png"))) {
+        store(LOGO_NAME_KEY, f.name);
+      } else {                                          // don't leave an OLD stored image under the new file's name
+        store(LOGO_KEY, null); store(LOGO_NAME_KEY, null);
+        log("logo not saved (browser storage is full or unavailable) — it's used for this session only.");
+      }
+      setLogo(c, f.name);
+    } catch (e) { log("logo not loaded: " + e.message); }
+    finally { URL.revokeObjectURL(u); $("logoFile").value = ""; }
   });
+  $("logoClear").addEventListener("click", () => { logoGen++; store(LOGO_KEY, null); store(LOGO_NAME_KEY, null); setLogo(null); });
+  $("logoUrl").addEventListener("input", () => { store(LOGO_URL_KEY, $("logoUrl").value); refresh(); });
+  $("logoUrl").value = fetchStored(LOGO_URL_KEY);
+  const savedLogo = fetchStored(LOGO_KEY);
+  if (savedLogo) {
+    const gen = logoGen;                                // a pick/removal made before this resolves wins
+    loadImage(savedLogo).then((im) => { if (gen === logoGen) setLogo(prepLogo(im), fetchStored(LOGO_NAME_KEY)); })
+      .catch(() => { if (gen === logoGen) { store(LOGO_KEY, null); store(LOGO_NAME_KEY, null); } });
+  }
   if (!("serial" in navigator)) log("WebSerial not available. Use Chrome/Edge over https or localhost.");
   if (typeof qrcode === "undefined") {
     const qrRadio = document.querySelector('input[name="mode"][value="qr"]');
