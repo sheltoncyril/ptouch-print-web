@@ -5,6 +5,7 @@
   python ptprint.py --qr "https://parts.d3n.sh/loc/42" --tape 12
   python ptprint.py --text "SHRINK" --flip off --tape 6      # heat-shrink: no mirror
   python ptprint.py --text "BOX-A" --dry preview.png --tape 6
+  python ptprint.py --logo lockup --qr "https://shunt.works"   # brand logo + QR (needs tape >= 9mm)
   python ptprint.py --status
 """
 import argparse
@@ -17,11 +18,14 @@ def main():
     g = ap.add_mutually_exclusive_group(required=False)
     g.add_argument("--text")
     g.add_argument("--qr")
+    ap.add_argument("--logo", metavar="NAME|PATH",
+                    help=f"print a logo, alone or beside --qr: {' | '.join(raster.LOGOS)} (bundled) "
+                         "or a path to an image. Not combinable with --text")
     ap.add_argument("--port", default=printer.DEFAULT_PORT)
     ap.add_argument("--tape", type=int, choices=[6, 9, 12],
                     help="loaded tape width mm — P300BT supports 6/9/12 (omit = auto-detect)")
     ap.add_argument("--flip", choices=["auto", "on", "off"], default="auto",
-                    help="de-mirror: auto (by media), on (laminated), off (heat-shrink)")
+                    help="mirror the image: auto (by detected media), on (laminated), off (heat-shrink)")
     ap.add_argument("--chain", dest="save_tape", action="store_true",
                     help="chain printing (batch tape-saving); a single label stays inside until the next print")
     ap.add_argument("--cut", action="store_true", help="print a thin dotted cut-line guide (reading-left)")
@@ -46,24 +50,32 @@ def main():
         print(printer.feed_out(a.port))
         return
 
-    if not (a.text or a.qr):
-        ap.error("one of --text or --qr is required")
+    if not (a.text or a.qr or a.logo):
+        ap.error("one of --text, --qr or --logo is required")
+    if a.logo and a.text:
+        ap.error("--logo can't be combined with --text (use --logo with --qr, or alone)")
 
     if a.dry:
         from PIL import Image
         tape = a.tape or 12
-        comp = raster.compose(text=a.text, qr=a.qr, tape=tape, flip=a.flip,
-                              font=a.font, height=a.height, save_tape=a.save_tape, cut=a.cut,
-                              scale=a.size, align=a.align)
+        try:
+            comp = raster.compose(text=a.text, qr=a.qr, tape=tape, flip=a.flip,
+                                  font=a.font, height=a.height, save_tape=a.save_tape, cut=a.cut,
+                                  scale=a.size, align=a.align, logo=a.logo)
+        except (ValueError, FileNotFoundError) as e:
+            ap.error(str(e))
         c = comp["canvas"]
         c.resize((raster.RASTER_WIDTH * 4, c.size[1] * 4), Image.NEAREST).save(a.dry)
         print(f"DRY tape={tape}mm flip={'on' if comp['flip'] else 'off'} "
               f"{comp['lines']} lines -> {a.dry}")
         return
 
-    print(printer.print_label(text=a.text, qr=a.qr, tape=a.tape, flip=a.flip,
-                              font=a.font, height=a.height, port=a.port, save_tape=a.save_tape, cut=a.cut,
-                              scale=a.size, align=a.align))
+    try:
+        print(printer.print_label(text=a.text, qr=a.qr, tape=a.tape, flip=a.flip,
+                                  font=a.font, height=a.height, port=a.port, save_tape=a.save_tape, cut=a.cut,
+                                  scale=a.size, align=a.align, logo=a.logo))
+    except (ValueError, FileNotFoundError) as e:
+        ap.error(str(e))
 
 
 if __name__ == "__main__":

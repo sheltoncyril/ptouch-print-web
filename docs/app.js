@@ -6,11 +6,19 @@
 const RASTER_WIDTH = 128;
 const BYTES_PER_LINE = 16;
 const HEAT_SHRINK_TYPES = new Set([0x11, 0x17]);      // tube -> read from outside, do NOT mirror
+const MEDIA_NAMES = { 0x01: "laminated", 0x03: "non-laminated", 0x11: "heat-shrink 2:1", 0x17: "heat-shrink 3:1" };
 const KNOWN_PRINTABLE = { 6: 32, 9: 50, 12: 64, 18: 64, 24: 64 };   // P300BT caps print at ~9mm (64 dots)
 const DPMM = 180 / 25.4;                               // printer dots per millimetre
 const CUT_GAP_DOTS = 12;                               // blank margin either side of a cut line (~1.7mm)
 const CUT_LINE_DOTS = 1;                               // cut-line thickness along the tape (~0.14mm) — thin
 const CUT_DASH = 2;                                    // dotted line: dot pitch across the width
+
+// Brand logos for "Logo + QR" — ink-trimmed bitmaps, shared with the Python side (server/ptouch/raster.py LOGOS).
+const LOGO_SRC = { lockup: "brand/logo-lockup.png", wordmark: "brand/logo-wordmark.png", mark: "brand/logo-mark.png" };
+const QR_MIN_MODULE_DOTS = 2;                          // below this thermal bleed makes a QR unscannable
+const QR_ALNUM = /^[0-9A-Z $%*+\-./:]+$/;
+const URL_HOST = /^(https?):\/\/([A-Za-z0-9.-]+(?::\d+)?)(?=[/?#]|$)/i;
+const logoImgs = {};                                   // key -> loaded <img>
 
 let port = null;
 let detectedTape = null;
@@ -75,6 +83,56 @@ function renderQR(data) {
   ctx.fillStyle = "#000";
   for (let r = 0; r < n; r++) for (let col = 0; col < n; col++) if (qr.isDark(r, col)) ctx.fillRect(col, r, 1, 1);
   return c;
+}
+
+/* ---- Logo + QR: [ pad | logo | gap | QR | pad ], exactly h dots tall. Mirrors raster.render_logo_qr.
+   QR modules are whole dots (fractional scaling is what makes 1-bit thermal QR codes unreadable). ---- */
+function qrPayload(data) {                             // upper-case scheme+host so the QR can use alphanumeric mode
+  const m = URL_HOST.exec(data);                       // (both are case-insensitive; the path is left as typed)
+  return m ? m[1].toUpperCase() + "://" + m[2].toUpperCase() + data.slice(m[0].length) : data;
+}
+function qrModules(data) {
+  if (typeof qrcode === "undefined") throw new Error("QR library not loaded (offline?)");
+  const qr = qrcode(0, "M");
+  qr.addData(data, QR_ALNUM.test(data) ? "Alphanumeric" : "Byte");
+  qr.make();
+  return { n: qr.getModuleCount(), dark: (r, c) => qr.isDark(r, c) };
+}
+function renderLogoQR(logoImg, url, h) {
+  let grid = null, m = 0;
+  if (url) {
+    grid = qrModules(qrPayload(url));
+    m = Math.floor(h / grid.n);
+    if (m < QR_MIN_MODULE_DOTS)
+      throw new Error(`QR is ${grid.n} modules wide but the band is only ${h} dots (< ${QR_MIN_MODULE_DOTS} dots/module): use wider tape (>= 9 mm) or a shorter URL`);
+  }
+  const mw = logoImg ? Math.max(1, Math.round(logoImg.naturalWidth * h / logoImg.naturalHeight)) : 0;
+  const pad = m ? 4 * m : 8;                           // >= 4 modules of quiet zone at each end
+  const gap = (mw && m) ? 6 * m : 0;
+  const qw = grid ? grid.n * m : 0;
+  const c = document.createElement("canvas"); c.width = pad + mw + gap + qw + pad; c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, h);
+  let x = pad;
+  if (logoImg) {
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(logoImg, x, 0, mw, h);
+    x += mw + gap;
+  }
+  if (grid) {
+    ctx.fillStyle = "#000";
+    const y0 = Math.floor((h - qw) / 2);
+    for (let r = 0; r < grid.n; r++)
+      for (let col = 0; col < grid.n; col++)
+        if (grid.dark(r, col)) ctx.fillRect(x + col * m, y0 + r * m, m, m);
+  }
+  const id = ctx.getImageData(0, 0, c.width, c.height), d = id.data;   // 1-bit, as the printer will see it
+  for (let i = 0; i < d.length; i += 4) {
+    const v = (d[i] + d[i + 1] + d[i + 2]) / 3 < 128 ? 0 : 255;
+    d[i] = d[i + 1] = d[i + 2] = v; d[i + 3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+  return { canvas: c, qrModules: grid ? grid.n : 0, moduleDots: m };
 }
 
 /* ---- align content across the tape width (no scaling). Returns a printable-tall canvas
@@ -206,10 +264,11 @@ function currentParams() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
   const tapeSel = $("tape").value;
   const media = $("media").value;
-  let flip, mediaType;
-  if (media === "laminated") { flip = "on"; mediaType = 0x01; }
-  else if (media === "heatshrink") { flip = "off"; mediaType = 0x11; }
-  else { flip = "auto"; mediaType = detectedType || 0x01; }   // auto: mirror off the DETECTED type
+  // The Media mode only decides MIRRORING. The media-type byte in the print info always describes the
+  // loaded cartridge (the detected type), exactly as Auto sends it — a manual pick used to force
+  // 0x01/0x11 there, so it printed a different job than Auto for the very same tape.
+  const flip = media === "laminated" ? "on" : media === "heatshrink" ? "off" : "auto";
+  const mediaType = detectedType || (media === "heatshrink" ? 0x11 : 0x01);
   const tape = tapeSel === "auto" ? (detectedTape || 12) : parseInt(tapeSel, 10);
   const saveTape = $("nofeed").checked;                // 0C terminator: print + hold (no auto-feed)
   const font = $("font").value;
@@ -225,10 +284,21 @@ function compose() {
   const doFlip = resolveFlip(flip, mediaType);
   const text = $("data").value || " ";
   const boxPx = Math.max(8, Math.round(printable * scale));      // target content height in dots
-  const raw = mode === "qr" ? resizeNearest(renderQR(text), boxPx) : renderText(text, font, weight, boxPx);
+  let raw, info = "";
+  if (mode === "logo") {
+    const key = $("logo").value, img = logoImgs[key];
+    if (!img) throw new Error("logo image not loaded");
+    const r = renderLogoQR(img, $("logoUrl").value.trim(), boxPx);
+    raw = r.canvas;
+    info = r.qrModules ? `QR ${r.qrModules}×${r.qrModules} modules at ${r.moduleDots} dots each (${(r.moduleDots * 25.4 / 180).toFixed(2)} mm)`
+                       : "logo only";
+  } else {
+    raw = mode === "qr" ? resizeNearest(renderQR(text), boxPx) : renderText(text, font, weight, boxPx);
+  }
   const content = placeInBand(raw, printable, align);            // vertical align (no scaling)
   const asm = assemble(buildRows(content, printable, doFlip), printable, $("cutlines").checked, doFlip);
   drawPreview(content, tape, printable, asm);
+  $("logoInfo").textContent = info;
   return { rows: asm.rows, tape, mediaType, doFlip, saveTape };
 }
 
@@ -315,7 +385,7 @@ async function detectTape() {
     detectedTape = width; detectedType = type;
     if (KNOWN_PRINTABLE[width]) $("tape").value = String(width);
     $("media").value = hs ? "heatshrink" : "auto";
-    log(`detected tape=${width}mm type=0x${type.toString(16)} — ${!hs ? "mirrored" : "heat-shrink (no mirror)"}`);
+    log(`detected tape=${width}mm type=0x${type.toString(16)} (${MEDIA_NAMES[type] || "unknown media"}) — mirror ${hs ? "OFF" : "ON"}`);
   } else if (data) {                                    // printer answered but reports no cartridge
     log("no tape in the printer — insert a cartridge, or pick the width manually.");
   } else {                                              // nothing came back at all
@@ -331,7 +401,7 @@ async function printLabel() {
   try {
     const { rows, tape, mediaType, doFlip, saveTape } = compose();
     const job = buildJob(rows, tape, mediaType, saveTape);
-    log(`printing tape=${tape}mm flip=${doFlip ? "on" : "off"} ${rows.length} lines, ${job.length} bytes${saveTape ? " (no auto-feed)" : ""}...`);
+    log(`printing tape=${tape}mm type=0x${mediaType.toString(16)} flip=${doFlip ? "on" : "off"} ${rows.length} lines, ${job.length} bytes${saveTape ? " (no auto-feed)" : ""}...`);
     await writeBytes(job);
     log(saveTape ? "done — label held inside; hit Feed / eject when finished." : "done.");
   } catch (e) { log("print failed: " + e.message); }
@@ -354,7 +424,22 @@ async function feedOut() {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
-  const refresh = () => { try { compose(); } catch (e) { /* QR offline etc. */ } };
+  const curMode = () => document.querySelector('input[name="mode"]:checked').value;
+  const syncMode = () => {                              // show only the controls the current mode uses
+    const m = curMode();
+    $("data").hidden = m === "logo";
+    $("fontRow").hidden = m !== "text";
+    $("logoOpts").hidden = m !== "logo";
+  };
+  const refresh = () => {
+    try { compose(); }
+    catch (e) {                                         // QR offline etc.; in logo mode say WHY (e.g. QR too dense)
+      if (curMode() === "logo") {
+        $("logoInfo").textContent = e.message;
+        const cv = $("preview"); cv.getContext("2d").clearRect(0, 0, cv.width, cv.height);   // don't leave a stale label
+      }
+    }
+  };
   $("connectBtn").addEventListener("click", connect);
   $("disconnectBtn").addEventListener("click", disconnect);
   $("detectBtn").addEventListener("click", detectTape);
@@ -370,12 +455,21 @@ window.addEventListener("DOMContentLoaded", () => {
   ["tape", "media"].forEach((id) => $(id).addEventListener("change", () => {
     if ($(id).value === "auto" && port) { detectTape(); } else { refresh(); }
   }));
-  document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener("change", refresh));
+  document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener("change", () => { syncMode(); refresh(); }));
+  $("logo").addEventListener("change", refresh);
+  $("logoUrl").addEventListener("input", refresh);
+  Object.entries(LOGO_SRC).forEach(([key, src]) => {    // preload; re-render once each arrives
+    const im = new Image();
+    im.onload = () => { logoImgs[key] = im; refresh(); };
+    im.onerror = () => log(`logo "${key}" failed to load (${src})`);
+    im.src = src;
+  });
   if (!("serial" in navigator)) log("WebSerial not available. Use Chrome/Edge over https or localhost.");
   if (typeof qrcode === "undefined") {
     const qrRadio = document.querySelector('input[name="mode"][value="qr"]');
     if (qrRadio) qrRadio.disabled = true;
     log("QR library did not load (offline?) — QR disabled; text labels still work.");
   }
+  syncMode();
   refresh();
 });

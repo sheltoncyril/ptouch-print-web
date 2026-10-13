@@ -46,6 +46,7 @@ python ptprint.py --text "BOX-A"                    # auto-detect tape, print to
 python ptprint.py --qr "https://parts.d3n.sh/loc/42" --tape 12
 python ptprint.py --text "SHRINK" --flip off --tape 6     # heat-shrink: no mirror
 python ptprint.py --text "BOX-A" --dry preview.png --tape 6
+python ptprint.py --logo lockup --qr "https://shunt.works"     # brand logo + QR (see below)
 ```
 
 MCP server (stdio) — exposes `printer_status`, `print_text`, `print_qr`:
@@ -76,6 +77,27 @@ uvicorn api:app --host 127.0.0.1 --port 8088
 # GET  /status
 # POST /print   {"text":"BOX-A","tape":6,"flip":"auto"}
 ```
+
+## Brand label (logo + QR)
+
+Prints a logo — alone or beside a QR code — e.g. the shunt.works lockup and a link to the site.
+
+- **Web:** Label → **Logo + QR**, pick the logo (mark + name / name only / mark only) and the URL
+  (leave it blank for logo only).
+- **CLI:** `python ptprint.py --logo lockup --qr "https://shunt.works"` — `--logo` takes `lockup`,
+  `wordmark`, `mark`, or a path to any PNG/JPG (flattened onto white, trimmed, thresholded).
+  Combine with `--tape`, `--size`, `--align`, `--cut`, `--dry`.
+
+How it's laid out: logo and QR share the full printable band (64 dots ≈ 9 mm on 12 mm tape).
+The QR uses **whole dots per module** (3 dots = 0.42 mm for a 21-module code on 12 mm tape, 2 dots
+on 9 mm) — fractional scaling is what makes thermal QR codes unscannable. The URL's scheme and host
+are upper-cased in the payload so a short URL fits QR version 1 in alphanumeric mode (they're
+case-insensitive, so it opens identically; the path is left as typed). Needs **≥ 9 mm tape**; a URL
+too long for ≥ 2 dots/module is refused with a clear error rather than printed unreadable.
+At 12 mm the lockup + QR label is ≈ 82 mm long and dense — use fresh batteries or 5V power.
+
+The bundled logos are in `docs/brand/` (ink-trimmed grayscale, 256 px tall, derived from the
+shunt.works brand exports). Swap those files to rebrand; the web page and CLI share them.
 
 ## Printer notes (learned the hard way)
 
