@@ -29,7 +29,11 @@ def main():
     ap.add_argument("--chain", dest="save_tape", action="store_true",
                     help="chain printing (batch tape-saving); a single label stays inside until the next print")
     ap.add_argument("--cut", action="store_true", help="print a thin dotted cut-line guide (reading-left)")
-    ap.add_argument("--font")
+    ap.add_argument("--font", metavar="NAME|PATH",
+                    help=f"font file path, or a bundled font: {' | '.join(raster.FONT_FILES)} "
+                         "(default: Arial Bold / system fallback)")
+    ap.add_argument("--slant", action="store_true",
+                    help=f"lean the text {raster.LEAN_DEG} degrees forward (techno / trace-style lettering)")
     ap.add_argument("--height", type=int, default=0)
     ap.add_argument("--size", type=float, default=1.0,
                     help="text height as a fraction of the tape (1=fit, 0.5=half)")
@@ -61,7 +65,7 @@ def main():
         try:
             comp = raster.compose(text=a.text, qr=a.qr, tape=tape, flip=a.flip,
                                   font=a.font, height=a.height, save_tape=a.save_tape, cut=a.cut,
-                                  scale=a.size, align=a.align, logo=a.logo)
+                                  scale=a.size, align=a.align, logo=a.logo, slant=a.slant)
         except (ValueError, FileNotFoundError) as e:
             ap.error(str(e))
         c = comp["canvas"]
@@ -73,7 +77,7 @@ def main():
     try:
         print(printer.print_label(text=a.text, qr=a.qr, tape=a.tape, flip=a.flip,
                                   font=a.font, height=a.height, port=a.port, save_tape=a.save_tape, cut=a.cut,
-                                  scale=a.size, align=a.align, logo=a.logo))
+                                  scale=a.size, align=a.align, logo=a.logo, slant=a.slant))
     except (ValueError, FileNotFoundError) as e:
         ap.error(str(e))
 

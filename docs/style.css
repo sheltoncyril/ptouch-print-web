@@ -8,6 +8,12 @@
     --accent: #4c86ff; --accent-fg: #0b0d10; --muted: #9aa3ad;
   }
 }
+/* Bundled open-source fonts for the Font picker — SIL OFL 1.1, see fonts/README.md + fonts/*-OFL.txt */
+@font-face { font-family: "Oxanium"; src: url("fonts/Oxanium%5Bwght%5D.ttf") format("truetype"); font-weight: 200 800; font-display: swap; }
+@font-face { font-family: "Orbitron"; src: url("fonts/Orbitron%5Bwght%5D.ttf") format("truetype"); font-weight: 400 900; font-display: swap; }
+@font-face { font-family: "Jura"; src: url("fonts/Jura%5Bwght%5D.ttf") format("truetype"); font-weight: 300 700; font-display: swap; }
+@font-face { font-family: "Chakra Petch"; src: url("fonts/ChakraPetch-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Chakra Petch"; src: url("fonts/ChakraPetch-Bold.ttf") format("truetype"); font-weight: 700; font-display: swap; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }   /* author display rules (.row etc.) must not un-hide these */
 body {

@@ -20,6 +20,16 @@ CUT_GAP_DOTS = 12                        # blank margin either side of a cut lin
 CUT_LINE_DOTS = 1                        # cut-line thickness along the tape (~0.14mm) — thin guide
 CUT_DASH = 2                             # dotted line: dot pitch across the width (2 = every other dot)
 
+LEAN_DEG = 22                            # forward lean of the "slant" option (matches the web "Lean" box)
+FONT_DIR = Path(__file__).resolve().parents[2] / "docs" / "fonts"
+FONT_FILES = {                           # bundled name -> (regular, bold); variable fonts: same file twice
+    "oxanium": ("Oxanium[wght].ttf",) * 2,
+    "orbitron": ("Orbitron[wght].ttf",) * 2,
+    "jura": ("Jura[wght].ttf",) * 2,
+    "chakra-petch": ("ChakraPetch-Regular.ttf", "ChakraPetch-Bold.ttf"),
+}
+_SYSTEM_FONTS = ("arialbd.ttf", "arial.ttf", "segoeui.ttf", "DejaVuSans-Bold.ttf")
+
 QR_MIN_MODULE_DOTS = 2                  # below this thermal bleed makes a QR unscannable
 _QR_ALNUM = re.compile(r"[0-9A-Z $%*+\-./:]+")
 _URL_HOST = re.compile(r"^(https?)://([A-Za-z0-9.-]+(?::\d+)?)(?=[/?#]|$)", re.I)
@@ -42,25 +52,99 @@ def resolve_flip(flip, media_type: int) -> bool:
     return media_type not in HEAT_SHRINK_TYPES          # auto: mirror unless heat-shrink tube
 
 
-def render_text(text, font_path=None, height=48):
-    from PIL import Image, ImageDraw, ImageFont
-    font = None
-    if font_path:
-        font = ImageFont.truetype(font_path, height)
-    else:
-        for cand in ("arialbd.ttf", "arial.ttf", "segoeui.ttf", "DejaVuSans-Bold.ttf"):
-            try:
-                font = ImageFont.truetype(cand, height)
-                break
-            except OSError:
-                continue
-        if font is None:
-            font = ImageFont.load_default()
-    bbox = ImageDraw.Draw(Image.new("1", (10, 10), 1)).textbbox((0, 0), text, font=font)
-    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    img = Image.new("1", (w + 8, h + 4), 1)
-    ImageDraw.Draw(img).text((4 - bbox[0], 2 - bbox[1]), text, font=font, fill=0)
-    return img
+def _system_font(size):
+    from PIL import ImageFont
+    for cand in _SYSTEM_FONTS:
+        try:
+            return ImageFont.truetype(cand, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _load_font(spec, size, bold=True):
+    """`spec` is a bundled name (FONT_FILES) or a font file path. Variable fonts are set to a
+    bold/regular weight — Pillow would otherwise use their lightest master."""
+    from PIL import ImageFont
+    named = FONT_FILES.get(str(spec).lower())
+    if named:
+        spec = str(FONT_DIR / named[1 if bold else 0])
+    if not Path(spec).expanduser().is_file():
+        raise FileNotFoundError(f"font not found: {spec!r} (bundled: {', '.join(FONT_FILES)})")
+    try:
+        font = ImageFont.truetype(str(Path(spec).expanduser()), size)
+    except OSError as e:                             # not a font / corrupt file
+        raise ValueError(f"can't read font {str(spec)!r}: {e}") from e
+    try:
+        axes = font.get_variation_axes()
+    except OSError:                                  # static font
+        return font
+    want = 700 if bold else 400
+    font.set_variation_by_axes([
+        max(a["minimum"], min(a["maximum"], want)) if a["name"] in (b"Weight", "Weight") else a["default"]
+        for a in axes])
+    return font
+
+
+def _has_glyph(font, ch):
+    """True if `font` draws a real glyph for `ch` (not its .notdef box)."""
+    from PIL import Image, ImageDraw
+    n = int(font.size * 2) + 16
+
+    def ink(c):
+        im = Image.new("L", (n, n), 0)
+        ImageDraw.Draw(im).text((8, 8), c, font=font, fill=255)
+        return im.tobytes()
+    return ink(ch) != ink("\U0010FFFD")
+
+
+def render_text(text, font_path=None, height=48, slant=False, bold=True):
+    from PIL import Image, ImageDraw
+    font = _load_font(font_path, height, bold) if font_path else _system_font(height)
+    has = {ch: _has_glyph(font, ch) for ch in set(text) if not ch.isspace()} if font_path else {}
+    missing = not all(has.values())
+    if not (slant or missing):                       # plain path: crisp 1-bit text, as always
+        bbox = ImageDraw.Draw(Image.new("1", (10, 10), 1)).textbbox((0, 0), text, font=font)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        img = Image.new("1", (w + 8, h + 4), 1)
+        ImageDraw.Draw(img).text((4 - bbox[0], 2 - bbox[1]), text, font=font, fill=0)
+        return img
+    return _render_text_aa(text, font, height, has, slant)
+
+
+def _render_text_aa(text, font, height, has, slant):
+    """Anti-aliased path, needed to lean text without breaking strokes and to splice in a system
+    font for characters the chosen font lacks (e.g. the ohm sign in Orbitron)."""
+    import math
+    from PIL import Image, ImageDraw, ImageOps
+    fallback = _system_font(height) if not all(has.values()) else None
+    runs = []                                        # [text, font] runs, baseline-aligned
+    for ch in text:
+        f = fallback if has.get(ch) is False else font
+        if runs and runs[-1][1] is f:
+            runs[-1][0] += ch
+        else:
+            runs.append([ch, f])
+    asc = max(f.getmetrics()[0] for _, f in runs)
+    desc = max(f.getmetrics()[1] for _, f in runs)
+    width = sum(f.getlength(s) for s, f in runs)
+    img = Image.new("L", (int(width) + 16, asc + desc + 8), 255)
+    d = ImageDraw.Draw(img)
+    x = 8.0
+    for s, f in runs:
+        d.text((x, 4 + asc), s, font=f, fill=0, anchor="ls")
+        x += f.getlength(s)
+    ink = ImageOps.invert(img).point(lambda p: 255 if p > 24 else 0).getbbox()
+    if ink:
+        img = img.crop(ink)
+    canvas = Image.new("L", (img.width + 8, img.height + 4), 255)
+    canvas.paste(img, (4, 2))
+    if slant:                                        # lean right about the bottom edge
+        t = math.tan(math.radians(LEAN_DEG))
+        hh = canvas.height
+        canvas = canvas.transform((canvas.width + math.ceil(t * hh), hh), Image.AFFINE,
+                                  (1, t, -t * hh, 0, 1, 0), resample=Image.BILINEAR, fillcolor=255)
+    return canvas.point(lambda p: 255 if p >= 128 else 0).convert("1")
 
 
 def render_qr(data, box=2, border=1):
@@ -214,7 +298,7 @@ def _raster_cmd(row, compress):
     return bytes([0x47, BYTES_PER_LINE, 0x00]) + row
 
 
-def _render_sized(text, qr, font, height, printable, scale, logo=None):
+def _render_sized(text, qr, font, height, printable, scale, logo=None, slant=False):
     """Render content AT its final dot height so it stays crisp (no downscale + 1-bit mush):
     text at a scaled font size, QR block-resized with nearest-neighbour."""
     base_h = height or max(8, printable - 4)
@@ -229,7 +313,7 @@ def _render_sized(text, qr, font, height, printable, scale, logo=None):
             cw, ch = img.size
             img = img.resize((max(1, round(cw * th / ch)), th), Image.NEAREST)
         return img
-    return render_text(text, font, render_h)
+    return render_text(text, font, render_h, slant=slant)
 
 
 def place_in_band(img, printable, align="center"):
@@ -307,12 +391,12 @@ def rows_to_image(rows):
 
 
 def compose(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None, height=0,
-            save_tape=False, cut=False, scale=1.0, align="center", logo=None):
+            save_tape=False, cut=False, scale=1.0, align="center", logo=None, slant=False):
     if logo and text:
         raise ValueError("logo can't be combined with text (use logo + qr, or logo alone)")
     printable = printable_dots(tape)
     do_flip = resolve_flip(flip, media_type)
-    content = _render_sized(text, qr, font, height, printable, scale, logo)   # rendered AT target size
+    content = _render_sized(text, qr, font, height, printable, scale, logo, slant)   # rendered AT target size
     content = place_in_band(content, printable, align)
     rows, _ = to_raster(content, printable, do_flip)
     if cut:
@@ -325,11 +409,11 @@ def compose(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None
 
 
 def compose_rows(text=None, qr=None, tape=12, media_type=0x01, flip="auto", font=None, height=0,
-                 cut=False, scale=1.0, align="center", logo=None):
+                 cut=False, scale=1.0, align="center", logo=None, slant=False):
     """Raster rows for a single label (no job wrapper) — used by batch printing."""
     printable = printable_dots(tape)
     do_flip = resolve_flip(flip, media_type)
-    content = _render_sized(text, qr, font, height, printable, scale, logo)
+    content = _render_sized(text, qr, font, height, printable, scale, logo, slant)
     content = place_in_band(content, printable, align)
     rows, _ = to_raster(content, printable, do_flip)
     if cut:

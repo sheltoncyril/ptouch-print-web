@@ -16,6 +16,7 @@ const CUT_DASH = 2;                                    // dotted line: dot pitch
 // "Logo + QR": the logo is supplied by the person using the page (file picker) and kept only in THIS
 // browser's localStorage — no logo or brand asset ships with this app.
 const LOGO_KEY = "ptouch.logo", LOGO_NAME_KEY = "ptouch.logoName", LOGO_URL_KEY = "ptouch.logoUrl";
+const LEAN_DEG = 22;                                   // forward lean of the "Lean" option; keep equal to raster.LEAN_DEG
 const LOGO_MAX_H = 256;                                // stored/working logo height (4x the 64-dot print band)
 const LOGO_MAX_SRC = 2048;                             // longest source side we ever read pixels from (big photos are scaled first)
 const QR_MIN_MODULE_DOTS = 2;                          // below this thermal bleed makes a QR unscannable
@@ -46,7 +47,7 @@ function printableSpan(printable) { return Math.floor((RASTER_WIDTH - printable)
 /* ---- render content to a tight black-on-white canvas ---- */
 // Render text AT its final dot height (boxPx tall incl. margin) so it stays crisp — no big
 // render then downscale (which + 1-bit = mush). Font size is chosen to hit the glyph height.
-function renderText(text, family = "Arial, sans-serif", weight = "bold", boxPx = 64) {
+function renderText(text, family = "Arial, sans-serif", weight = "bold", boxPx = 64, slant = false) {
   const padX = 4, padY = 6;                            // margin so anti-aliased glyph edges aren't clipped
   const glyphPx = Math.max(6, boxPx - padY * 2);
   const ref = 256;                                     // measure at a big ref, then scale the font size
@@ -61,13 +62,16 @@ function renderText(text, family = "Arial, sans-serif", weight = "bold", boxPx =
   const m = meas.measureText(text);
   const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
   const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
-  const w = Math.max(1, Math.ceil(left + right)) + padX * 2;
+  const tan = slant ? Math.tan(LEAN_DEG * Math.PI / 180) : 0;   // lean about the baseline: tops move right
+  const w = Math.max(1, Math.ceil(left + right + tan * (asc + desc))) + padX * 2;
   const h = Math.max(1, Math.ceil(asc + desc)) + padY * 2;
   const c = document.createElement("canvas"); c.width = w; c.height = h;
   const ctx = c.getContext("2d");
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
   ctx.fillStyle = "#000"; ctx.font = fontStr; ctx.textBaseline = "alphabetic";
-  ctx.fillText(text, padX + left, padY + asc);
+  ctx.translate(padX + left + tan * desc, padY + asc);          // descenders lean left, so start tan*desc in
+  ctx.transform(1, 0, -tan, 1, 0, 0);
+  ctx.fillText(text, 0, 0);
   return c;
 }
 
@@ -323,11 +327,20 @@ function currentParams() {
   const weight = $("bold").checked ? "bold" : "normal";
   const scale = parseFloat($("size").value) || 1;
   const align = $("valign").value;
-  return { mode, tape, flip, mediaType, saveTape, font, weight, scale, align };
+  const slant = $("slant").checked;
+  return { mode, tape, flip, mediaType, saveTape, font, weight, scale, align, slant };
+}
+
+// Canvas draws with a webfont only once it has loaded (until then it silently uses a fallback), so make
+// sure the selected face is ready before previewing/printing; 'loadingdone' re-renders when it lands.
+function ensureFont() {
+  if (!document.fonts) return Promise.resolve();
+  const { font, weight } = currentParams();
+  return document.fonts.load(`${weight} 40px ${font}`, $("data").value || "A").catch(() => []);
 }
 
 function compose() {
-  const { mode, tape, flip, mediaType, saveTape, font, weight, scale, align } = currentParams();
+  const { mode, tape, flip, mediaType, saveTape, font, weight, scale, align, slant } = currentParams();
   const printable = printableDots(tape);
   const doFlip = resolveFlip(flip, mediaType);
   const text = $("data").value || " ";
@@ -342,7 +355,7 @@ function compose() {
             r.qrModules ? `QR ${r.qrModules}×${r.qrModules} modules at ${r.moduleDots} dots each (${(r.moduleDots * 25.4 / 180).toFixed(2)} mm)`
                         : "no QR"].join(" · ");
   } else {
-    raw = mode === "qr" ? resizeNearest(renderQR(text), boxPx) : renderText(text, font, weight, boxPx);
+    raw = mode === "qr" ? resizeNearest(renderQR(text), boxPx) : renderText(text, font, weight, boxPx, slant);
   }
   const content = placeInBand(raw, printable, align);            // vertical align (no scaling)
   const asm = assemble(buildRows(content, printable, doFlip), printable, $("cutlines").checked, doFlip);
@@ -448,6 +461,7 @@ async function printLabel() {
   if (busy) { log("printer busy — wait for the current job to finish."); return; }
   busy = true;
   try {
+    await ensureFont();                                // never print with a not-yet-loaded webfont's fallback
     const { rows, tape, mediaType, doFlip, saveTape } = compose();
     const job = buildJob(rows, tape, mediaType, saveTape);
     log(`printing tape=${tape}mm type=0x${mediaType.toString(16)} flip=${doFlip ? "on" : "off"} ${rows.length} lines, ${job.length} bytes${saveTape ? " (no auto-feed)" : ""}...`);
@@ -496,8 +510,11 @@ window.addEventListener("DOMContentLoaded", () => {
   $("feedBtn").addEventListener("click", feedOut);
   $("data").addEventListener("input", refresh);
   $("cutlines").addEventListener("change", refresh);
-  $("font").addEventListener("change", refresh);
-  $("bold").addEventListener("change", refresh);
+  const fontChanged = () => { refresh(); ensureFont().then(refresh); };   // draw now, redraw once the face loads
+  $("font").addEventListener("change", fontChanged);
+  $("bold").addEventListener("change", fontChanged);
+  $("slant").addEventListener("change", refresh);
+  if (document.fonts) document.fonts.addEventListener("loadingdone", refresh);
   $("size").addEventListener("change", refresh);
   $("valign").addEventListener("change", refresh);
   // switching width/media to "auto" re-detects (if connected); otherwise just re-render
